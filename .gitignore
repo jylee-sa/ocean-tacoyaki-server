@@ -1,0 +1,5 @@
+node_modules/
+타코야키-서버-시작.bat
+package-lock.json
+data/
+webdist/releases/
