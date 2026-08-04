@@ -613,9 +613,21 @@ export function createRelay(opts?: {
     // 경로 탈출 차단: 역슬래시·널문자·'..'/빈 세그먼트 금지 + 최종 경로가 webRoot 안인지 재확인.
     if (!p.startsWith('/') || p.includes('\\') || p.includes('\0')) return null
     if (p.slice(1).split('/').some((seg) => seg === '..' || seg === '')) return null
-    const abs = join(webRoot, p.slice(1))
-    const rel = relative(webRoot, abs)
+    let abs = join(webRoot, p.slice(1))
+    let rel = relative(webRoot, abs)
     if (!rel || rel.startsWith('..')) return null
+    // 새 배포 직전 열린 페이지는 이전 릴리스 경로의 지연 로딩 청크를 요청할 수 있다.
+    // Railway 컨테이너는 최신 릴리스만 보관하므로, 없는 이전 릴리스 자산은 현재 assets 로 폴백한다.
+    const releaseParts = rel.split(sep)
+    if (
+      releaseParts.length >= 4 &&
+      releaseParts[0] === 'releases' &&
+      /^[a-z0-9-]+$/i.test(releaseParts[1]) &&
+      releaseParts[2] === 'assets'
+    ) {
+      rel = join('assets', ...releaseParts.slice(3))
+      abs = join(webRoot, rel)
+    }
     const dot = abs.lastIndexOf('.')
     const type = dot >= 0 ? WEB_MIME[abs.slice(dot).toLowerCase()] : undefined
     if (!type) return null
@@ -3521,13 +3533,20 @@ export function createRelay(opts?: {
       // 손님(guest) 계정은 채팅 이미지 불가 — [img=...] 마크업을 서버에서 제거(클라 UI 숨김의 우회 방지).
       // 색·크기·기울임·굵기 등 다른 꾸미기는 그대로 허용. 멤버·관리자·GM 은 이미지 허용.
       if (socket.data.account?.role === 'guest') raw = raw.replace(/\[img=[^\]]*\]/gi, '')
+      // 연출용 check·handout 마크업은 GM 전용이다. PL 이 보낸 태그는 전각 괄호로 바꿔 일반 텍스트로 남긴다.
+      if (sender.role !== 'GM') {
+        raw = raw.replace(/\[(\/?)(?:check|handout)(?:=[^\]]*)?\]/gi, (tag) =>
+          tag.replaceAll('[', '［').replaceAll(']', '］')
+        )
+      }
       if (!raw.trim()) return
 
       // 서버 권위 다이스: 명령이면 서버가 굴리고, 아니면 평문 메시지.
       // author/color/playerId 는 서버가 참가자 정보로 스탬프 (클라 전송값 무시 → 위조 방지).
-      // script(/desc)는 꾸미기 본문이므로 다이스로 해석하지 않음.
-      // 스크립트(/desc)는 GM 전용이다. 구버전 웹판이나 조작한 소켓 요청도 여기서 일반 채팅으로 낮춘다.
-      const isScript = sender.role === 'GM' && req.script === true
+      // script(/desc)와 GM 전용 check·handout은 꾸미기 본문이므로 다이스로 해석하지 않는다.
+      // 구버전 웹판이나 조작한 소켓 요청도 GM 외에는 일반 채팅으로 낮춘다.
+      const isGmMarkup = /^\s*\[(?:check|handout)(?:=[^\]]*)?\]/i.test(raw)
+      const isScript = sender.role === 'GM' && (req.script === true || isGmMarkup)
       const dice = isScript ? null : parseCommand(raw)
       const id = randomUUID()
       const time = Date.now()

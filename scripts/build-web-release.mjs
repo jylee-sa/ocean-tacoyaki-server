@@ -1,4 +1,4 @@
-import { cp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdir, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 
 const webRoot = resolve('webdist')
@@ -27,6 +27,11 @@ for (const file of await readdir(releaseAssetsRoot)) {
     .replaceAll('"assets/', `"${releaseAssetsUrl}`)
     .replaceAll("'assets/", `'${releaseAssetsUrl}`)
   if (rewritten !== source) await writeFile(path, rewritten)
+}
+
+if (process.env.WEB_RELEASE_LINK_ASSETS === '1') {
+  await rm(assetsRoot, { recursive: true, force: true })
+  await symlink(`releases/${releaseId}/assets`, assetsRoot, 'dir')
 }
 
 const html = template.replaceAll('/assets/', releaseAssetsUrl)

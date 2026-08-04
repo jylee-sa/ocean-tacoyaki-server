@@ -13,7 +13,7 @@ COPY . .
 
 # 해시 파일을 직접 수정하는 현재 웹판도 배포마다 새 URL로 제공해 브라우저 불변 캐시와 충돌하지 않게 한다.
 # 최종 이미지에는 현재 릴리스 하나만 보관한다. 데이터 볼륨(/app/data)에는 영향을 주지 않는다.
-RUN npm run build:web && rm -rf webdist/assets
+RUN WEB_RELEASE_LINK_ASSETS=1 npm run build:web
 
 ENV NODE_ENV=production
 # PORT 는 Railway 서비스 변수로 8787 고정(index.ts 가 process.env.PORT 사용) · 공개 도메인도 8787 로 연결.

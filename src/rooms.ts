@@ -847,7 +847,7 @@ function coerceDisplaySec(v: unknown, image: string | undefined): number | undef
 const MARKUP_TAG_RE = /\[(\/?)([a-z]+)(?:=[^\]]*)?\]/g
 const MARKUP_TAGS = new Set([
   'b', 'i', 'u', 's', 'color', 'bg', 'size', 'ruby', 'center', 'right', 'left',
-  'box', 'bubble', 'bar', 'img', 'dim', 'roll'
+  'box', 'bubble', 'bar', 'img', 'dim', 'roll', 'handout', 'check', 'style'
 ])
 /** 보이드 태그 — 그 자리에 별도 객체(이미지·굴림 숫자·막대)가 렌더되므로 공백으로 치환해,
  *  앞뒤 글자가 이어붙어 화면에 없는 단어가 생기는 오발동을 막는다. 감싸기 태그는 표시 폭이 없어 제거. */
