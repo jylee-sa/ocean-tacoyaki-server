@@ -3526,7 +3526,8 @@ export function createRelay(opts?: {
       // 서버 권위 다이스: 명령이면 서버가 굴리고, 아니면 평문 메시지.
       // author/color/playerId 는 서버가 참가자 정보로 스탬프 (클라 전송값 무시 → 위조 방지).
       // script(/desc)는 꾸미기 본문이므로 다이스로 해석하지 않음.
-      const isScript = req.script === true
+      // 스크립트(/desc)는 GM 전용이다. 구버전 웹판이나 조작한 소켓 요청도 여기서 일반 채팅으로 낮춘다.
+      const isScript = sender.role === 'GM' && req.script === true
       const dice = isScript ? null : parseCommand(raw)
       const id = randomUUID()
       const time = Date.now()
@@ -4234,12 +4235,22 @@ export function createRelay(opts?: {
       const me = room.participants.get(playerId)
       if (!me || me.role !== 'GM') return
       const h = store.getHandout(roomId, req.id)
-      if (!h || h.scope === 'private') return // 비공개엔 강제 포커스 미동작
+      if (!h) return
+      // 강제 표시는 모두가 볼 수 있어야 한다. 비공개 자료는 먼저 전체 공개로 영속·동기화한 뒤 표시한다.
+      const shown =
+        h.scope === 'private'
+          ? store.upsertHandout(roomId, { ...h, scope: 'all' })?.handout
+          : h
+      if (!shown) return
+      if (shown !== h) {
+        const viewers = [...room.participants.values()].filter((p) => canViewHandout(shown, p)).map((p) => p.playerId)
+        emitHandoutState(viewers, shown)
+      }
       // 대상 = 볼 수 있는 사람 중 발신 GM 제외(GM 본인 화면은 강제 오픈 안 함).
       const targets = [...room.participants.values()]
-        .filter((p) => p.playerId !== playerId && canViewHandout(h, p))
+        .filter((p) => p.playerId !== playerId && canViewHandout(shown, p))
         .map((p) => p.playerId)
-      emitHandoutFocus(targets, h.id)
+      emitHandoutFocus(targets, shown.id)
     })
 
     // ===== 맵·토큰 (다중 맵) =====
