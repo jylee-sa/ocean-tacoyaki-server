@@ -3533,6 +3533,14 @@ export function createRelay(opts?: {
       // 손님(guest) 계정은 채팅 이미지 불가 — [img=...] 마크업을 서버에서 제거(클라 UI 숨김의 우회 방지).
       // 색·크기·기울임·굵기 등 다른 꾸미기는 그대로 허용. 멤버·관리자·GM 은 이미지 허용.
       if (socket.data.account?.role === 'guest') raw = raw.replace(/\[img=[^\]]*\]/gi, '')
+      // /emas 는 /desc 와 같은 GM 전용 프로필 없는 스크립트지만, 강조 렌더러가 식별할 수 있는 안전한 서식으로 감싼다.
+      // 타박 웹판은 이 서식 조합을 감지해 바깥 스크립트 카드에 강조색을 적용한다.
+      const emasMatch = sender.role === 'GM' ? /^\s*\/emas(?:\s+|$)/i.exec(raw) : null
+      if (emasMatch) {
+        const emasText = raw.slice(emasMatch[0].length).trim()
+        if (!emasText) return
+        raw = `[style=font-style:italic;font-weight:700;letter-spacing:0px;display:block]${emasText}[/style]`
+      }
       // 연출용 check·handout 마크업은 GM 전용이다. PL 이 보낸 태그는 전각 괄호로 바꿔 일반 텍스트로 남긴다.
       if (sender.role !== 'GM') {
         raw = raw.replace(/\[(\/?)(?:check|handout)(?:=[^\]]*)?\]/gi, (tag) =>
@@ -3546,7 +3554,7 @@ export function createRelay(opts?: {
       // script(/desc)와 GM 전용 check·handout은 꾸미기 본문이므로 다이스로 해석하지 않는다.
       // 구버전 웹판이나 조작한 소켓 요청도 GM 외에는 일반 채팅으로 낮춘다.
       const isGmMarkup = /^\s*\[(?:check|handout)(?:=[^\]]*)?\]/i.test(raw)
-      const isScript = sender.role === 'GM' && (req.script === true || isGmMarkup)
+      const isScript = sender.role === 'GM' && (req.script === true || isGmMarkup || Boolean(emasMatch))
       const dice = isScript ? null : parseCommand(raw)
       const id = randomUUID()
       const time = Date.now()
