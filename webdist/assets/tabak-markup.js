@@ -1,5 +1,4 @@
 (() => {
-  const MARKED = 'data-tabak-markup'
   const STYLE_PROPERTIES = new Set([
     'background-color', 'color', 'display', 'font-size', 'font-style', 'font-weight',
     'letter-spacing', 'line-height', 'margin', 'padding', 'text-align', 'text-decoration', 'text-shadow'
@@ -55,7 +54,7 @@
   }
 
   function applyCompatibilityMarkup(message) {
-    if (message.getAttribute(MARKED) === '1') return
+    if (message.querySelector(':scope > .tabak-style, :scope > .mk-check, :scope > .mk-handout')) return
     const raw = message.textContent ?? ''
     const style = /^\[style=([^\]]*)\]([\s\S]*)\[\/style\]$/.exec(raw)
     const check = /^\[check\]([\s\S]*)\[\/check\]$/.exec(raw)
@@ -66,7 +65,6 @@
     else if (handout) replaceHandout(message, handout[1] ?? '', handout[2])
     else return
 
-    message.setAttribute(MARKED, '1')
   }
 
   function applyCompactMessages() {
