@@ -29,7 +29,13 @@
   function applyLuckLimit() {
     document.querySelectorAll('.luck-card').forEach((card) => {
       const cost = Number(card.querySelector('.luck-card-sub b')?.textContent?.trim())
-      card.hidden = !Number.isFinite(cost) || cost > MAX_LUCK_CARD_COST
+      if (!Number.isFinite(cost) || cost > MAX_LUCK_CARD_COST) {
+        if (card.style.display !== 'none' || card.style.getPropertyPriority('display') !== 'important') {
+          card.style.setProperty('display', 'none', 'important')
+        }
+      } else if (card.style.display === 'none') {
+        card.style.removeProperty('display')
+      }
     })
   }
 
@@ -45,7 +51,12 @@
   }
 
   schedule()
-  new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true })
+  new MutationObserver(schedule).observe(document.body, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['class', 'style']
+  })
   document.addEventListener(
     'click',
     (event) => {
