@@ -98,6 +98,41 @@ export interface Relay {
   listAvatarRefs: (into: Set<string>) => void
 }
 
+const CHECK_STYLE =
+  'display:inline-block;min-width:132px;margin:8px 0;padding:5px 40px;border:1px solid #fff;border-radius:20px;background:linear-gradient(90deg,#828282 0%,#000 100%);box-shadow:0 0 2px 1px #8f8f8f;color:#fff;font-size:12px;font-weight:600;letter-spacing:-1px;line-height:1.35;text-align:center;text-shadow:0 0 5px #000;white-space:nowrap'
+const EMAS_STYLE =
+  'display:block;background:linear-gradient(90deg,light-dark(#fff0e2,#4b3021),light-dark(#fff7ee,#3c2b22));color:light-dark(#943f00,#ffd1ac);font-style:italic;font-weight:700'
+const HANDOUT_STYLE =
+  'display:block;margin:3px 0;border:1px solid var(--line2);border-radius:8px;background:var(--bg2);text-align:left;font-style:normal'
+const HANDOUT_HEADER_STYLE =
+  'display:block;padding:8px 12px;border-bottom:1px solid var(--line2);color:var(--accent);font-size:11px;font-weight:800;letter-spacing:1.5px'
+const HANDOUT_CONTENT_STYLE = 'display:block;padding:12px'
+const HANDOUT_TITLE_STYLE = 'display:block;margin:0 0 8px;color:var(--tx);font-size:15px;font-weight:700'
+const HANDOUT_BODY_STYLE =
+  'display:block;color:var(--tx);font-size:13px;line-height:1.7;white-space:pre-wrap'
+
+function escapeNativeMarkupText(value: string): string {
+  return value.replaceAll('[', '［').replaceAll(']', '］')
+}
+
+function nativeCheckMarkup(content: string): string {
+  return `[css=${CHECK_STYLE}][css=font-style:normal]${escapeNativeMarkupText(content.trim())}[/css][/css]`
+}
+
+function nativeHandoutMarkup(title: string, content: string): string {
+  const heading = title.trim()
+    ? `[css=${HANDOUT_TITLE_STYLE}]${escapeNativeMarkupText(title.trim())}[/css]`
+    : ''
+  return `[css=${HANDOUT_STYLE}][css=${HANDOUT_HEADER_STYLE}]● HANDOUT[/css][css=${HANDOUT_CONTENT_STYLE}]${heading}[css=${HANDOUT_BODY_STYLE}]${escapeNativeMarkupText(content)}[/css][/css][/css]`
+}
+
+function convertGmMarkup(raw: string): string | null {
+  const check = /^\s*\[check\]([\s\S]*?)\[\/check\]\s*$/i.exec(raw)
+  if (check) return check[1].trim() ? nativeCheckMarkup(check[1]) : null
+  const handout = /^\s*\[handout(?:=([^\]]*))?\]([\s\S]*?)\[\/handout\]\s*$/i.exec(raw)
+  return handout ? nativeHandoutMarkup(handout[1] ?? '', handout[2]) : null
+}
+
 /** POST 본문을 바이너리 버퍼로 읽음(자산 업로드). maxBytes 초과 시 연결 끊고 null. */
 function readRawBody(req: IncomingMessage, maxBytes: number): Promise<Buffer | null> {
   return new Promise((resolve) => {
@@ -3907,14 +3942,15 @@ export function createRelay(opts?: {
       if (emasMatch) {
         const text = raw.slice(emasMatch[0].length).trim()
         if (!text) return
-        raw = `[css=font-style:italic;font-weight:700;letter-spacing:0px;display:block]${text}[/css]`
+        raw = `[css=${EMAS_STYLE}]${escapeNativeMarkupText(text)}[/css]`
       }
-      const isGmMarkup = sender.role === 'GM' && /^\s*\[(?:check|handout)(?:=[^\]]*)?\]/i.test(raw)
+      const gmMarkup = sender.role === 'GM' ? convertGmMarkup(raw) : null
+      if (gmMarkup) raw = gmMarkup
 
       // 서버 권위 다이스: 명령이면 서버가 굴리고, 아니면 평문 메시지.
       // author/color/playerId 는 서버가 참가자 정보로 스탬프 (클라 전송값 무시 → 위조 방지).
       // script(/desc)는 꾸미기 본문이므로 다이스로 해석하지 않음.
-      const isScript = req.script === true || isGmMarkup || Boolean(emasMatch)
+      const isScript = req.script === true || Boolean(gmMarkup) || Boolean(emasMatch)
       const dice = isScript ? null : parseCommand(raw)
       const id = randomUUID()
       const time = Date.now()
