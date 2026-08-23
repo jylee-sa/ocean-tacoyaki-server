@@ -133,6 +133,11 @@ function convertGmMarkup(raw: string): string | null {
   return handout ? nativeHandoutMarkup(handout[1] ?? '', handout[2]) : null
 }
 
+function convertLegacyStyle(raw: string): string | null {
+  const style = /^\s*\[style=([^\]]*)\]([\s\S]*?)\[\/style\]\s*$/i.exec(raw)
+  return style ? `[css=${style[1]}]${escapeNativeMarkupText(style[2])}[/css]` : null
+}
+
 /** POST 본문을 바이너리 버퍼로 읽음(자산 업로드). maxBytes 초과 시 연결 끊고 null. */
 function readRawBody(req: IncomingMessage, maxBytes: number): Promise<Buffer | null> {
   return new Promise((resolve) => {
@@ -3946,6 +3951,8 @@ export function createRelay(opts?: {
       }
       const gmMarkup = sender.role === 'GM' ? convertGmMarkup(raw) : null
       if (gmMarkup) raw = gmMarkup
+      const legacyStyle = req.script === true ? convertLegacyStyle(raw) : null
+      if (legacyStyle) raw = legacyStyle
 
       // 서버 권위 다이스: 명령이면 서버가 굴리고, 아니면 평문 메시지.
       // author/color/playerId 는 서버가 참가자 정보로 스탬프 (클라 전송값 무시 → 위조 방지).
