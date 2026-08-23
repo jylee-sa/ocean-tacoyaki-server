@@ -6,6 +6,10 @@
   display: none;
 }
 
+.dcard .dluck {
+  display: none;
+}
+
 .msg-script:has(.mk-box) {
   background: none;
   padding: 0;
