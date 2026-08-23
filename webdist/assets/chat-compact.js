@@ -1,4 +1,6 @@
 (() => {
+  const MAX_LUCK_CARD_COST = 10
+
   function applyCompactMessages() {
     const messages = [...document.querySelectorAll('.log > .msg')]
 
@@ -24,6 +26,13 @@
     }
   }
 
+  function applyLuckLimit() {
+    document.querySelectorAll('.luck-card').forEach((card) => {
+      const cost = Number(card.querySelector('.luck-card-sub b')?.textContent?.trim())
+      card.hidden = !Number.isFinite(cost) || cost > MAX_LUCK_CARD_COST
+    })
+  }
+
   let scheduled = false
   function schedule() {
     if (scheduled) return
@@ -31,9 +40,24 @@
     requestAnimationFrame(() => {
       scheduled = false
       applyCompactMessages()
+      applyLuckLimit()
     })
   }
 
   schedule()
   new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true })
+  document.addEventListener(
+    'click',
+    (event) => {
+      const target = event.target
+      if (!(target instanceof Element)) return
+      const card = target.closest('.luck-card')
+      if (!card) return
+      const cost = Number(card.querySelector('.luck-card-sub b')?.textContent?.trim())
+      if (Number.isFinite(cost) && cost <= MAX_LUCK_CARD_COST) return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+    },
+    true
+  )
 })()
