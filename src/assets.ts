@@ -50,8 +50,8 @@ const MIME_DENY_RE = /^image\/svg/i
  * data URL(base64) → 그 바이트의 sha256 해시. put() 이 붙일 이름과 **정확히 같아야** 한다.
  *
  * 채팅 두상은 방 저장본엔 data URL 로 남고, 입장 스냅샷을 보낼 때만 자산으로 내부화된다.
- * 그래서 참조 수집기(asset: 문자열만 훑는다)가 그 자산을 못 찾아 '아무도 안 쓰는 파일'로 판정했다 —
- * 관리 화면의 '회수 가능'이 늘 비슷한 값으로 돌아오던 정체다. 이 함수로 그 data URL 도 라이브로 센다.
+ * 그래서 참조 수집기(asset: 문자열만 훑는다)는 그 자산을 못 찾아 '아무도 안 쓰는 파일'로 판정한다 —
+ * 관리 화면의 '회수 가능'이 늘 비슷한 값으로 돌아오는 정체다. 이 함수로 그 data URL 도 라이브로 센다.
  * 규칙이 put 과 1바이트라도 어긋나면 반대로 '쓰고 있는 두상'을 지우게 되므로 테스트로 못박아 둔다.
  */
 export function dataUrlHash(s: unknown): string | null {
@@ -135,7 +135,7 @@ export function createAssetStore(opts?: { dataDir?: string; persist?: boolean })
         for (const [h, m] of Object.entries(obj)) if (HASH_RE.test(h) && typeof m === 'string') mimes.set(h, safeAssetMime(m))
       }
     } catch (e) {
-      console.error('[assets] index.json 로드 실패 — 빈 색인으로 시작:', e)
+      console.error('[assets] index.json 로드 실패. 빈 색인으로 시작:', e)
     }
   }
 
@@ -168,8 +168,8 @@ export function createAssetStore(opts?: { dataDir?: string; persist?: boolean })
   /**
    * 미참조 자산 훑기 — 실제 삭제(apply=true)와 '얼마나 지울 수 있나' 계산(apply=false)이 같은 코드를 탄다.
    *
-   * 이 둘이 갈라져 있던 것이 회수 가능 용량은 잡히는데 정리를 눌러도 하나도 줄지 않던 원인이다. 표시 쪽은 단순히
-   * (전체 − 참조중) 을 뺐고, 실삭제 쪽은 만든 지 얼마 안 된 파일을 유예로 건너뛰었다. 같은 잣대를 쓴다.
+   * 이 둘이 갈라지면 회수 가능 용량은 잡히는데 정리를 눌러도 하나도 줄지 않는다. 표시 쪽이 단순히
+   * (전체 − 참조중) 을 빼고, 실삭제 쪽은 만든 지 얼마 안 된 파일을 유예로 건너뛰기 때문이다. 같은 잣대를 쓴다.
    * 유예로 남긴 것(deferred)과 지우다 실패한 것(failed)을 따로 세어 호출 측이 사람에게 설명할 수 있게 한다.
    */
   function scan(live: Set<string>, opts: SweepOpts | undefined, apply: boolean): SweepResult {
@@ -178,7 +178,7 @@ export function createAssetStore(opts?: { dataDir?: string; persist?: boolean })
     // 디스크의 모든 자산 파일을 진실원본으로 — 색인에 없어도(쓰기 실패 등) 회수 대상에 포함.
     const all = new Set<string>(mimes.keys())
     for (const h of memBytes.keys()) all.add(h)
-    const stale: string[] = [] // 해시 이름이 아닌 잔여 임시파일(업로드 실패 흔적) — 집계·회수 사각지대였다
+    const stale: string[] = [] // 해시 이름이 아닌 잔여 임시파일(업로드 실패 흔적) — 집계·회수 사각지대다
     if (persist) {
       try {
         for (const f of readdirSync(dir)) {

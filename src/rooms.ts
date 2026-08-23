@@ -2,7 +2,20 @@
 // 세션방 영속: persist 모드면 방을 <dataDir>/rooms/<id>.json 에 저장(장면·메타·멤버·전체 채팅).
 // 시작 시 로드, 변경 시 주기적 자동저장(lastActivityAt 기준 dirty flush). 방은 소유자 삭제 전까지 유지(유휴 정리 안 함).
 import { randomUUID } from 'node:crypto'
-import { readFileSync, existsSync, readdirSync, unlinkSync, appendFileSync, writeFileSync, statSync, mkdirSync } from 'node:fs'
+import {
+  readFileSync,
+  existsSync,
+  readdirSync,
+  unlinkSync,
+  appendFileSync,
+  writeFileSync,
+  statSync,
+  mkdirSync,
+  truncateSync,
+  openSync,
+  readSync,
+  closeSync
+} from 'node:fs'
 import { mkdir, writeFile, rename, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { capImage, capImageList, capId, clampCoord } from './limits'
@@ -14,6 +27,9 @@ import type {
   Combatant,
   CombatState,
   ChatMessage,
+  DeckCard,
+  DeckUpsertReq,
+  DeckView,
   Handout,
   GameMap,
   GridConfig,
@@ -55,13 +71,55 @@ function splitLines(buf: Buffer): Buffer[] {
 
 /** 저장이 이만큼 넘게 안 끝나면 매달린 것으로 보고 관리 화면에 알린다. */
 const STUCK_FLUSH_MS = 60_000
-/** 방당 메시지 보관 상한. 세션방 영속(전체 채팅 보관, 소유자가 비울 때까지) — 폭주 방지용 큰 상한. */
+/**
+ * 방이 메모리에 들고 있는 대화 수 — 입장할 때 통째로 내려보내는 몫이라 무한정 늘릴 수 없다.
+ * 여기서 넘치는 앞부분은 **버리지 않고** 보관소(<방>.archive.NNN.jsonl)로 옮긴다(evictOldest).
+ * 보관분은 채팅 창의 '보관된 이전 대화 불러오기'로 언제든 되읽는다.
+ */
+// ⚠ 클라 런타임 상한(src/renderer/src/store/useChatStore.ts 의 RUNTIME_CHAT_LIMIT)과 같은 값이어야 한다.
+// 클라가 더 작으면 입장할 때 받은 앞부분을 도로 버려 화면·내보내기에서 대화가 사라진다.
 const MAX_HISTORY = 20000
+/** 보관소 한 조각의 크기 상한 — 넘으면 다음 번호로 넘어간다(되읽을 때 한 조각만 읽으면 되게). */
+const ARCHIVE_PART_BYTES = 8 * 1024 * 1024
+/** 보관소 조각 번호 상한. 여기 닿으면 마지막 조각을 계속 키운다 — 늦게 읽힐지언정 잃지는 않는다. */
+const ARCHIVE_PART_MAX = 999
+/** 되읽기 한 번에 훑는 보관 줄 수 상한 — 볼 수 없는 대화만 이어져도 요청 하나가 오래 붙들지 않게. */
+const ARCHIVE_SCAN_LIMIT = 4000
+/** 되읽기 한 번에 돌려주는 대화 수 상한. */
+const ARCHIVE_PAGE_MAX = 500
+/** 계정 이전 내보내기에 실을 보관 대화 수 상한 — 통째로 메모리에 올리는 길이라 끝을 둔다. */
+const ARCHIVE_EXPORT_MAX = 200_000
+/** 읽어 둔 채로 들고 있는 보관 조각 수 — 여러 사람이 서로 다른 방을 번갈아 읽어도 재파싱이 잦지 않게. */
+const ARCHIVE_PAGE_CACHE = 4
+/** 보관 조각의 두상 사전 줄에서 열쇠(자산 해시)만 뽑는다 — 그림 목록을 조각에서 되세울 때 쓴다. */
+const ARCHIVE_AVATAR_KEY_RE = /"op":"av","k":"([0-9a-f]{64})"/g
+/** 한 번에 보관소로 옮기는 대화 수 상한 — 쓰기가 막혔을 때 매 마디마다 밀린 전량을 다시 직렬화하지 않게. */
+const ARCHIVE_APPEND_MAX = 2000
+/** 보관에 실패한 방이 다시 시도하기까지 쉬는 시간 — 막힌 디스크를 말 한 마디마다 두드리지 않게. */
+const ARCHIVE_RETRY_MS = 30_000
+/**
+ * 보관이 막혀도 방이 메모리에 들고 있을 수 있는 마지막 선.
+ * 여기 닿으면 사본 없이 앞부분을 버린다 — 아까운 일이지만, 그대로 두면 그 방 하나가 서버를 세워
+ * 다른 모든 방의 최근 대화까지 함께 잃는다. 버린 사실은 관리 화면에 지워지지 않는 경고로 남긴다.
+ */
+const MAX_HISTORY_HARD = MAX_HISTORY * 2
+/** 캐릭터 보관대 상한 — 한 방에서 오간 저널이 아무리 많아도 이만큼만 남긴다(오래된 것부터 덜어 낸다). */
+const MAX_CHAR_POOL = 200
 /** 맵당 오브젝트 개수 상한 — 방 상태 팽창 방어(coerceLoadedMap 모든 진입점 적용). */
 const MAX_TOKENS_PER_MAP = 2000
 /** 방이 들고 있는 GM 선택지 개수 상한 — 넘으면 오래된 것부터 버린다(옵션 스크립트가 무거워 무제한 불가). */
 const MAX_ROOM_CHOICES = 100
 const MAX_DRAWINGS_PER_MAP = 2000
+/** 방이 들고 있는 덱 수 상한 — 방 파일과 입장 스냅샷에 통째로 실리므로 끝을 둔다. */
+const MAX_DECKS = 12
+/** 한 덱의 카드 정의 수 상한(그림이 붙을 수 있어 넉넉하되 무한은 아니게). */
+const MAX_DECK_CARDS = 120
+/** 같은 카드를 몇 장까지 넣을 수 있는지 — 남은 더미가 카드 정의 수보다 지나치게 부풀지 않게. */
+const MAX_DECK_CARD_COUNT = 99
+/** 한 덱의 총 장수 상한(count 합) — 섞기가 만드는 배열의 크기. */
+const MAX_DECK_TOTAL = 400
+/** 한 번에 뽑을 수 있는 장수. */
+const MAX_DECK_DRAW = 10
 const MAX_TEXTS_PER_MAP = 1000
 
 /** 서버 내부 맵세트 — 토큰은 빠른 조회 위해 Map. 와이어 전송 시 toWireMap 으로 배열화. */
@@ -89,10 +147,22 @@ export interface Room {
   code: string
   title: string // 세션방 이름(목록 표시)
   ownerId: string // 소유자 계정 id(목록·삭제·복사·메타 권한). 비인증이면 playerId 폴백
+  /**
+   * 공동 GM 계정 id — 소유자가 방 안에서 지정한다. 영속.
+   *
+   * 소유자는 언제나 GM 이므로 여기 담지 않는다(담으면 양도할 때 두 곳을 맞춰야 하는 이중 원본이 된다).
+   * 참가자 레코드의 role 은 이 집합에서 파생된다 — 나갔다 들어와도, 서버가 다시 켜져도 자격이 남는다.
+   */
+  gmIds: Set<string>
   members: Set<string> // 참여한 적 있는 계정 id(목록용 · 소유자 포함)
   cardImage?: string // 세션 카드 이미지(1200×600 data URL)
   participants: Map<string, Participant> // key: playerId
-  characters: Map<string, SharedCharacter> // key: playerId (프레즌스 서브셋)
+  characters: Map<string, SharedCharacter> // key: playerId (프레즌스 서브셋 · 지금 장착한 캐릭터 한 명)
+  /**
+   * 캐릭터 보관대 — key: playerId + charId. 로스터에서 밀려난 캐릭터도 여기 남아,
+   * 맵에 놓아 둔 그 캐릭터의 토큰이 이름·색·두상·수치를 잃지 않는다. 영속.
+   */
+  charPool: Map<string, SharedCharacter>
   handouts: Map<string, Handout> // key: handout id (GM 자료)
   maps: Map<string, RoomMap> // key: map id (맵세트)
   activeMapId: string // 전원이 보는 활성 맵
@@ -101,12 +171,28 @@ export interface Room {
   cutInImages?: Partial<Record<SuccessLevel, string>> // 성공 단계별 연출 카드(GM 설정 · 전원 동기화)
   dimColor?: string // ~문장~ 행동지문 색(GM 설정 · 전원 동기화 · hex)
   madnessTables?: MadnessTables // GM 커스텀 광기표 — 미설정이면 클라 기본 표. 전원 동기화·영속.
+  /**
+   * 입실 잠금(공사중). 켜면 방을 만든 사람 말고는 못 들어온다 — 준비 중인 방에 초대 코드를 아는
+   * 사람이 불쑥 들어오는 것을 막는다. 이미 들어와 있는 사람은 내보내지 않는다. 영속.
+   */
+  locked?: boolean
   luckEnabled?: boolean // 행운 깎기(CoC7 하우스룰) 사용 여부 — GM 토글·전원 동기화·영속. 미설정=사용(기본).
   vnOverlay?: boolean // 일반 맵 위 VN 오버레이(대사창+발화자 스탠딩) 표시 — GM 토글·전원 동기화·영속. 미설정=꺼짐.
+  /**
+   * GM 의 귓속말 열람. 켜 두면 그 뒤로 오가는 1:1 귓속말이 GM 에게도 전달된다 — GM 토글·전원 동기화·영속.
+   * 미설정=꺼짐. 열림 여부는 방 설정이 아니라 말마다 찍히는 각인(ChatMessage.gmVisible)이 정하므로,
+   * 켜기 전에 오간 말은 나중에 켜도 열리지 않는다(뒤늦게 지난 사생활이 통째로 드러나지 않게).
+   */
+  gmSeeWhispers?: boolean
   bgm: BgmState[] // 방 BGM 트랙들 (다중, GM 제어·전원 동기화 · 최대 5)
   combat: CombatState | null // 방 전투 상태 (GM 제어·전원 동기화 · in-memory, 비영속)
   saveSlots?: SaveSlot[] // 저장 슬롯(반면 전체 명명 저장 · GM · 최대 3 · 영속)
   visualCards?: VisualCard[] // 비주얼 카드 — GM 등록·전원 동기화 · 영속
+  /**
+   * 덱(카드 뭉치) — GM 이 만들고 방 전원이 뽑는다. 영속.
+   * 남은 더미(draw)는 서버만 들고 있는다 — 내보내면 다음에 무엇이 나올지가 그대로 새어 나간다.
+   */
+  decks?: Deck[]
   globalTokens?: Map<string, Token> // 통합 레이어 — 맵세트를 넘어 모든 맵세트에 유지되는 토큰. key=token id · 영속
   channels: Map<string, Channel> // 그룹 채널(GM 개설·영속). key=channelId
   /** GM 선택지 — key=선택지 메시지 id. 옵션(스크립트 포함·비공개) + 이미 응답한 사람. 영속.
@@ -118,6 +204,29 @@ export interface Room {
   charRooms: Map<string, string[]>
   createdAt: number
   lastActivityAt: number
+}
+
+/**
+ * 덱의 서버 보관본 — 공개본(DeckView)에 '남은 더미'를 더한 것.
+ * draw 는 카드 정의 id 를 장수만큼 늘어놓고 섞은 배열이며, 뒤에서 하나씩 꺼내 쓴다.
+ */
+interface Deck {
+  id: string
+  name: string
+  cards: DeckCard[]
+  /** 남은 더미(정의 id · 뒤에서 뽑는다). 서버 밖으로 내보내지 않는다. */
+  draw: string[]
+  /**
+   * 버린 더미(뽑은 순서). by 가 있으면 '비밀로' 뽑은 것이라 그 사람과 GM 에게만 보인다 —
+   * 없으면 공개 뽑기라 전원이 본다. 게임 규칙에는 쓰이지 않는 표시용이라 사람마다 잘라 보내도 안전하다
+   * (섞기·자동 섞기는 언제나 카드 정의에서 한 벌을 새로 만든다).
+   */
+  discard: { id: string; by?: string }[]
+  announce: boolean
+  reshuffle: boolean
+  revealCards: boolean
+  who: 'all' | 'gm'
+  createdAt: number
 }
 
 /** 저장 슬롯 — 반면(맵·활성맵·BGM)을 이름 붙여 통째 저장. 최대 3 · 영속(디스크). */
@@ -154,7 +263,8 @@ export interface RoomSummary {
   code: string
   title: string
   cardImage?: string
-  owner: boolean // 요청 계정이 소유자(=GM)인지
+  owner: boolean // 요청 계정이 소유자인지(삭제·복사·이름 변경은 소유자만)
+  gm?: boolean // 요청 계정이 이 방의 GM 인지(소유자 또는 공동 GM). 옛 서버는 안 보낸다
   memberCount: number
   online: number // 현재 접속 인원
   updatedAt: number
@@ -290,6 +400,15 @@ function visFields(
   const vis = v && v !== 'all' ? v : undefined
   return { visibility: vis, hidden: vis === 'private' ? true : undefined }
 }
+/**
+ * 이 계정이 그 방의 GM 인가 — 소유자이거나 공동 GM 으로 지정된 사람.
+ *
+ * 방 안의 권한은 참가자 레코드의 role 이 정하고, 그 role 은 입장할 때 이 함수로 정해진다.
+ * 방 밖(입장 자격·잠금 통과·세션 목록)에서는 참가자 레코드가 없을 수 있어 이 함수를 직접 쓴다.
+ */
+export function isGm(room: { ownerId: string; gmIds: Set<string> }, accountId: string | undefined): boolean {
+  return !!accountId && (room.ownerId === accountId || room.gmIds.has(accountId))
+}
 /** 토큰의 유효 공개범위 — visibility 우선, 레거시 hidden:true 는 private, 없으면 all. */
 export function tokenVisibility(t: { visibility?: string; hidden?: boolean }): 'all' | 'owner' | 'private' | 'others' {
   return coerceVisibility(t.visibility) ?? (t.hidden ? 'private' : 'all')
@@ -403,6 +522,7 @@ function coerceToken(t: unknown): Token | null {
     h: coerceSpanCells(o.h),
     rotation: typeof o.rotation === 'number' && Number.isFinite(o.rotation) ? o.rotation : undefined,
     charPlayerId: capId(o.charPlayerId),
+    charId: capId(o.charId),
     label: typeof o.label === 'string' ? o.label.slice(0, 200) : undefined,
     color: typeof o.color === 'string' ? o.color.slice(0, 32) : undefined,
     image: capImage(o.image),
@@ -700,7 +820,7 @@ function packAvatars(messages: ChatMessage[]): { messages: ChatMessage[]; avatar
  * 이 방의 채팅 두상이 자산 저장소에 어떤 이름으로 들어가 있는지 모아 준다(자산 GC 라이브 집합).
  *
  * 두상은 방에는 data URL 로 남고, 입장 스냅샷을 보낼 때만 자산으로 내부화된다. 그래서 'asset:' 문자열만
- * 훑는 수집기는 그 파일을 못 찾아 '아무도 안 쓴다'고 판정했다. 같은 두상이 수천 줄에 반복되므로
+ * 훑는 수집기는 그 파일을 못 찾아 '아무도 안 쓴다'고 판정한다. 같은 두상이 수천 줄에 반복되므로
  * 문자열→해시 결과를 방 단위로 기억해 두 번 계산하지 않는다.
  */
 function collectAvatarHashes(room: Room, into: Set<string>): void {
@@ -723,7 +843,14 @@ export function canSeeMessage(
   canAccessGroup?: (groupId: string) => boolean
 ): boolean {
   if (m.secret) return m.playerId === viewer.playerId || viewer.role === 'GM'
-  if (m.channel === 'whisper') return m.playerId === viewer.playerId || m.to === viewer.playerId
+  // 귓속말은 주고받은 두 사람만. 단 발화 당시 방이 GM 열람을 켜 두었다면(각인) GM 도 본다 —
+  // 지금의 방 설정이 아니라 각인을 보므로, 설정을 켠다고 지난 귓속말이 소급해서 열리지 않는다.
+  if (m.channel === 'whisper')
+    return (
+      m.playerId === viewer.playerId ||
+      m.to === viewer.playerId ||
+      (m.gmVisible === true && viewer.role === 'GM')
+    )
   if (m.channel === 'group' && m.groupId) return canAccessGroup ? canAccessGroup(m.groupId) : false
   return true
 }
@@ -847,7 +974,7 @@ function coerceDisplaySec(v: unknown, image: string | undefined): number | undef
 const MARKUP_TAG_RE = /\[(\/?)([a-z]+)(?:=[^\]]*)?\]/g
 const MARKUP_TAGS = new Set([
   'b', 'i', 'u', 's', 'color', 'bg', 'size', 'ruby', 'center', 'right', 'left',
-  'box', 'bubble', 'bar', 'img', 'dim', 'roll', 'handout', 'check', 'style'
+  'box', 'bubble', 'bar', 'img', 'dim', 'roll', 'css'
 ])
 /** 보이드 태그 — 그 자리에 별도 객체(이미지·굴림 숫자·막대)가 렌더되므로 공백으로 치환해,
  *  앞뒤 글자가 이어붙어 화면에 없는 단어가 생기는 오발동을 막는다. 감싸기 태그는 표시 폭이 없어 제거. */
@@ -861,6 +988,117 @@ function stripChatMarkup(src: string): string {
       // 인라인 강조(*기울임*·**굵게**)의 별표는 렌더에서 사라지므로 매칭에서도 제거 — "*대성공*" 강조 발동.
       .replace(/\*/g, '')
   )
+}
+
+/** 덱 카드 정의 정규화 — 이름 필수(60캡)·설명 300캡·장수 1~99·그림 용량 캡. */
+function coerceDeckCards(v: unknown): DeckCard[] {
+  if (!Array.isArray(v)) return []
+  const out: DeckCard[] = []
+  let total = 0
+  for (const c of v) {
+    if (out.length >= MAX_DECK_CARDS || total >= MAX_DECK_TOTAL) break
+    if (!c || typeof c !== 'object') continue
+    const o = c as Record<string, unknown>
+    const name = (typeof o.name === 'string' ? o.name.trim() : '').slice(0, 60)
+    if (!name) continue
+    const text = (typeof o.text === 'string' ? o.text.trim() : '').slice(0, 300)
+    const raw = typeof o.count === 'number' && Number.isFinite(o.count) ? Math.round(o.count) : 1
+    // 총 장수 상한에 걸리면 남은 자리만큼만 넣는다 — 통째로 버리면 카드가 조용히 사라진다.
+    const count = Math.max(1, Math.min(MAX_DECK_CARD_COUNT, raw, MAX_DECK_TOTAL - total))
+    total += count
+    const card: DeckCard = { id: capId(o.id) || randomUUID(), name }
+    const image = capImage(o.image)
+    if (image) card.image = image
+    if (text) card.text = text
+    if (count > 1) card.count = count
+    out.push(card)
+  }
+  return out
+}
+
+/** 카드 정의를 장수만큼 늘어놓는다 — 섞기 전의 한 벌. */
+function deckPile(cards: DeckCard[]): string[] {
+  const out: string[] = []
+  for (const c of cards) for (let i = 0; i < Math.max(1, c.count ?? 1); i++) out.push(c.id)
+  return out
+}
+
+/** 제자리 섞기(피셔-예이츠). 뽑기는 배열 뒤에서 꺼내므로 앞뒤 치우침 없이 고르게 섞여야 한다. */
+function shufflePile(pile: string[]): string[] {
+  for (let i = pile.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[pile[i], pile[j]] = [pile[j], pile[i]]
+  }
+  return pile
+}
+
+/** 덱의 총 장수(count 합) — 남은 장수와 함께 '몇 장 중 몇 장'을 보여 주는 데 쓴다. */
+function deckTotal(d: Deck): number {
+  let n = 0
+  for (const c of d.cards) n += Math.max(1, c.count ?? 1)
+  return n
+}
+
+/**
+ * 덱 → 참가자에게 내보낼 공개본.
+ * 남은 더미의 순서는 절대 싣지 않는다 — 실으면 다음에 나올 카드가 그대로 보인다.
+ * 카드 목록을 감춘 덱은 GM 에게만 정의를 보인다(무엇이 들었는지가 놀이의 일부일 수 있다).
+ */
+function deckView(d: Deck, viewer?: { role: Participant['role']; playerId?: string }): DeckView {
+  const hide = !d.revealCards && viewer?.role !== 'GM'
+  // '비밀로' 뽑은 카드는 뽑은 사람과 GM 에게만. 남은 장수는 모두에게 알린다(그것까지 감추면 판이 어긋난다).
+  const seen = (e: { id: string; by?: string }): boolean =>
+    !e.by || viewer?.role === 'GM' || e.by === viewer?.playerId
+  return {
+    id: d.id,
+    name: d.name,
+    cards: hide ? [] : d.cards,
+    remaining: d.draw.length,
+    total: deckTotal(d),
+    discard: hide ? [] : d.discard.filter(seen).map((e) => e.id),
+    announce: d.announce,
+    reshuffle: d.reshuffle,
+    revealCards: d.revealCards,
+    who: d.who,
+    createdAt: d.createdAt
+  }
+}
+
+/** 덱 배열 정규화(로드용) — 최대 MAX_DECKS, 이름 필수·40캡. 남은 더미는 정의에 없는 id 를 걷어낸다. */
+function coerceDecks(v: unknown): Deck[] | undefined {
+  if (!Array.isArray(v)) return undefined
+  const out: Deck[] = []
+  for (const raw of v) {
+    if (out.length >= MAX_DECKS) break
+    if (!raw || typeof raw !== 'object') continue
+    const o = raw as Record<string, unknown>
+    const name = (typeof o.name === 'string' ? o.name.trim() : '').slice(0, 40)
+    if (!name) continue
+    const cards = coerceDeckCards(o.cards)
+    const ids = new Set(cards.map((c) => c.id))
+    /** 저장본의 더미에서 지금 정의에 있는 카드만 남긴다 — 정의가 바뀐 뒤 되살릴 때 유령 카드를 막는다. */
+    const keep = (x: unknown): string[] =>
+      (Array.isArray(x) ? x : []).filter((id): id is string => typeof id === 'string' && ids.has(id)).slice(0, MAX_DECK_TOTAL)
+    out.push({
+      id: capId(o.id) || randomUUID(),
+      name,
+      cards,
+      // draw 가 아예 없는 파일(내보내기본)은 한 벌을 새로 섞는다. 빈 배열은 '다 뽑았다'는 뜻이라 그대로 둔다.
+      draw: Array.isArray(o.draw) ? keep(o.draw) : shufflePile(deckPile(cards)),
+      // 버린 더미는 옛 저장본에서 문자열 배열로 온다 — 그때는 공개 뽑기로 본다.
+      discard: (Array.isArray(o.discard) ? o.discard : [])
+        .map((e) => (typeof e === 'string' ? { id: e } : (e as { id?: unknown; by?: unknown })))
+        .filter((e): e is { id: string; by?: string } => typeof e?.id === 'string' && ids.has(e.id))
+        .map((e) => (typeof e.by === 'string' ? { id: e.id, by: e.by } : { id: e.id }))
+        .slice(0, MAX_DECK_TOTAL),
+      announce: o.announce !== false,
+      reshuffle: o.reshuffle === true,
+      revealCards: o.revealCards !== false,
+      who: o.who === 'gm' ? 'gm' : 'all',
+      createdAt: typeof o.createdAt === 'number' ? o.createdAt : Date.now()
+    })
+  }
+  return out.length ? out : undefined
 }
 
 /** 비주얼 카드 배열 정규화(로드용) — 최대 30, 이름 필수·40캡, 이미지/음향 캡·둘 다 없으면 제외. 빈 결과=undefined. */
@@ -900,6 +1138,69 @@ function coerceGlobalTokens(v: unknown): Map<string, Token> | undefined {
   return tokens.size ? tokens : undefined
 }
 
+/**
+ * 보관대에 담을 몫만 남긴다.
+ *
+ * 보관대는 방 파일에 저장되고 입장할 때 전원에게 전달되므로, **토큰이 그리는 데 쓰는 것만** 담는다.
+ * 배너(계정 배너 · 1.2MB 캡)와 표정별 두상 묶음(최대 24장)은 토큰과 무관한데, 그냥 복사하면 사람×캐릭터
+ * 조합만큼 중복돼 방 파일과 입장 전송이 수십 MB 로 부푼다.
+ */
+function poolSubset(c: SharedCharacter): SharedCharacter {
+  return {
+    playerId: c.playerId,
+    charId: c.charId,
+    name: c.name,
+    color: c.color,
+    nameColor: c.nameColor,
+    headshot: c.headshot, // 원형 토큰 그림
+    standings: c.standings, // 스탠딩 토큰(자산 참조라 가볍다)
+    currentExpression: c.currentExpression,
+    standingHeight: c.standingHeight,
+    stats: c.stats, // 토큰 위 HP/MP/SAN 바
+    visibility: c.visibility
+  }
+}
+
+/** 파일에서 읽은 보관대 — 형태를 깎고 상한까지 적용해 되살린다. */
+function loadCharPool(v: unknown): Map<string, SharedCharacter> {
+  const out = new Map<string, SharedCharacter>()
+  if (!Array.isArray(v)) return out
+  for (const raw of v) {
+    if (out.size >= MAX_CHAR_POOL) break
+    const c = raw as SharedCharacter | null
+    const key = poolKey(c?.playerId, c?.charId)
+    if (!key || !c) continue
+    out.set(key, poolSubset({
+      ...c,
+      name: typeof c.name === 'string' ? c.name.slice(0, 100) : '',
+      color: typeof c.color === 'string' ? c.color.slice(0, 32) : '#7c9cff',
+      headshot: capImage(c.headshot),
+      standings: capImageList(c.standings)
+    }))
+  }
+  return out
+}
+
+/** 보관대 상한 적용 — 넘치면 오래 안 쓴 앞자리부터 덜어 낸다. */
+function trimCharPool(room: Room): void {
+  if (room.charPool.size <= MAX_CHAR_POOL) return
+  const drop = room.charPool.size - MAX_CHAR_POOL
+  let n = 0
+  for (const k of [...room.charPool.keys()]) {
+    if (n++ >= drop) break
+    room.charPool.delete(k)
+  }
+}
+
+/**
+ * 캐릭터 보관대 색인 키 — 사람과 캐릭터를 함께 잡는다. 둘 중 하나라도 비면 담지 않는다.
+ * 앞자리 길이를 붙여 잇는 이유: 구분자 한 글자로 이으면 그 글자가 id 안에 섞였을 때
+ * 다른 조합이 같은 키가 되어 남의 캐릭터를 가리키게 된다.
+ */
+function poolKey(playerId: string | undefined, charId: string | undefined): string {
+  return playerId && charId ? playerId.length + ':' + playerId + charId : ''
+}
+
 /** 방 → 영속 파일(JSON). 장면·메타·멤버·전체 채팅. 참가자/프레즌스는 런타임이라 제외. */
 function roomToFile(room: Room): Record<string, unknown> {
   const { messages, avatarPool } = packAvatars(room.messages) // 채팅 두상 풀 분리 — 파일 크기 절감
@@ -908,6 +1209,7 @@ function roomToFile(room: Room): Record<string, unknown> {
     code: room.code,
     title: room.title,
     ownerId: room.ownerId,
+    gmIds: [...room.gmIds],
     members: [...room.members],
     // 세션 멤버 명단(playerId 기준 · 이미지 없는 경량) — 재시작에도 '한번 접속한 멤버'를 권한 대상으로 유지.
     // connected 는 런타임 상태라 저장 안 함(로드 시 전부 오프라인 → 재접속하면 admit 이 갱신).
@@ -927,14 +1229,19 @@ function roomToFile(room: Room): Record<string, unknown> {
     dimColor: room.dimColor,
     madnessTables: room.madnessTables, // GM 커스텀 광기표
     luckEnabled: room.luckEnabled, // 행운 깎기 사용 여부
+    locked: room.locked, // 입실 잠금(공사중)
     vnOverlay: room.vnOverlay, // 일반 맵 VN 오버레이 표시 여부
+    gmSeeWhispers: room.gmSeeWhispers, // GM 귓속말 열람 여부
     bgm: room.bgm,
     channels: [...room.channels.values()],
+    // 캐릭터 보관대 — 맵 토큰이 charId 로 참조하므로 재시작 뒤에도 있어야 토큰이 이름·수치를 되찾는다.
+    charPool: [...room.charPool.values()],
     messages,
     avatarPool, // 채팅 두상 풀
     charRooms: Object.fromEntries(room.charRooms), // 방별 시트 멤버십
     saveSlots: room.saveSlots ?? [], // 저장 슬롯(반면 전체 명명 저장 · 최대 3)
     visualCards: room.visualCards ?? [], // 비주얼 카드 — 이미지/음향
+    decks: room.decks, // 덱 — 남은 더미까지(재시작해도 진행 중인 판이 이어지게)
     globalTokens: room.globalTokens ? [...room.globalTokens.values()] : [], // 통합 레이어 토큰
     // GM 선택지 — 재시작 뒤에도 화면에 남은 선택지 카드가 계속 눌리게(옵션 스크립트는 여기에만 있다).
     choices: room.choices
@@ -1008,12 +1315,18 @@ function roomFromFile(data: unknown): Room | null {
     code: o.code,
     title: typeof o.title === 'string' && o.title ? o.title : '세션',
     ownerId: typeof o.ownerId === 'string' ? o.ownerId : '',
+    // 공동 GM 이 없던 시절의 파일에는 이 항목이 없다 — 빈 집합으로 읽으면 소유자만 GM 이던 그대로다.
+    gmIds: new Set(Array.isArray(o.gmIds) ? (o.gmIds as unknown[]).filter((x): x is string => typeof x === 'string') : []),
     members: new Set(
       Array.isArray(o.members) ? o.members.filter((m): m is string => typeof m === 'string') : []
     ),
     cardImage: typeof o.cardImage === 'string' && o.cardImage ? o.cardImage : undefined,
     participants, // 영속 복원된 세션 멤버(전부 오프라인) — 재접속 시 admit 이 connected 갱신
     characters: new Map(),
+    // 로스터(characters)는 접속 중인 사람의 것이라 비우고 시작하지만, 보관대는 맵 토큰이 참조하므로 되살린다.
+    // 파일에서 온 값도 같은 규칙으로 깎는다 — 다른 필드는 전부 캡을 거치는데 여기만 날것으로 두면
+    // 멤버가 올린 번들 하나로 방 파일·입장 전송이 통째로 부푼다.
+    charPool: loadCharPool(o.charPool),
     handouts,
     maps,
     activeMapId:
@@ -1025,12 +1338,15 @@ function roomFromFile(data: unknown): Room | null {
     cutInImages: coerceCutInImages(o.cutInImages),
     dimColor: coerceDimColor(o.dimColor),
     madnessTables: coerceMadnessTables(o.madnessTables), // GM 커스텀 광기표
+    locked: o.locked === true ? true : undefined, // 입실 잠금(공사중)
     luckEnabled: typeof o.luckEnabled === 'boolean' ? o.luckEnabled : undefined, // 행운 깎기 사용 여부(미설정=기본 사용)
     vnOverlay: typeof o.vnOverlay === 'boolean' ? o.vnOverlay : undefined, // VN 오버레이 표시 여부(미설정=꺼짐)
+    gmSeeWhispers: o.gmSeeWhispers === true ? true : undefined, // GM 귓속말 열람 여부(미설정=꺼짐)
     bgm: coerceLoadedBgmList(o.bgm),
     combat: null, // 전투는 in-memory(비영속) — 재시작 시 초기화
     saveSlots: coerceSaveSlots(o.saveSlots), // 저장 슬롯 복원(최대 3)
     visualCards: coerceVisualCards(o.visualCards), // 비주얼 카드 복원
+    decks: coerceDecks(o.decks), // 덱 복원(정의에 없는 카드는 더미에서 걷어낸다)
     globalTokens: coerceGlobalTokens(o.globalTokens), // 통합 레이어 토큰 복원
     choices: coerceChoices(o.choices), // GM 선택지 복원(옵션 스크립트·이미 응답한 사람)
     channels: coerceChannels(o.channels),
@@ -1145,11 +1461,39 @@ export class RoomStore {
   private flushStartedAt = new Map<string, number>()
   /** 쓰는 중에 또 요청이 와서 '끝나면 한 번 더'로 예약해 둔 방. 예약은 하나면 충분하다. */
   private queued = new Set<string>()
+  /**
+   * 방마다 지금 쓰고 있는 보관소 조각 — 번호·크기와, 그 조각에 이미 적어 둔 두상 열쇠.
+   * 대화 한 마디마다 폴더를 다시 훑지 않기 위해 들고 있는다(같은 그림을 조각 안에서 두 번 적지 않는 데도 쓴다).
+   */
+  private archiveTips = new Map<string, { part: number; size: number; keys: Set<string> }>()
+  /**
+   * 보관된 대화가 붙잡고 있는 자산 해시 — 채팅에 붙인 그림은 본문에 'asset:<해시>' 참조로만 남는다.
+   * 이걸 세어 두지 않으면 자산 청소가 '아무도 안 쓰는 파일'로 보고 지워, 대화는 남았는데 그림만 사라진다.
+   */
+  private archiveRefs = new Map<string, Set<string>>()
+  /** 방금 읽어 둔 조각들 — 나눠 읽기가 같은 파일을 회차마다 다시 파싱하지 않게(여러 사람이 번갈아 읽어도 견디게 몇 칸). */
+  private archivePages: { roomId: string; part: number; size: number; messages: ChatMessage[] }[] = []
+  /** 보관소가 없다고 확인된 방 — 대부분의 방이 여기 든다. 매 입장마다 폴더를 다시 훑지 않으려고 기억해 둔다. */
+  private archiveNone = new Set<string>()
+  /**
+   * 보관 쓰기가 막힌 방과 다음에 다시 시도할 시각.
+   * 막힌 채로 말이 올 때마다 두드리면 그 동기 쓰기가 서버 전체를 붙든다 — 잠시 쉬었다 다시 본다.
+   */
+  private archiveRetryAt = new Map<string, number>()
+  /**
+   * 보관 쪽 말썽 — 방 저장(.json)이 잘된다고 지워지면 안 된다.
+   * saveTrouble 은 저장이 성공할 때마다 비워지므로, 보관소만 막힌 상태가 그 틈에 감춰지는 것을 막는다.
+   */
+  private archiveTrouble = new Map<string, string>()
 
   /** persist:true 면 <dataDir>/rooms/*.json 로드·자동저장. 기본 비영속(테스트 안전). */
-  constructor(opts?: { persist?: boolean; dataDir?: string }) {
+  /** 보관 쓰기가 막혔을 때 다시 시도하기까지 쉬는 시간(ms). 테스트가 기다리지 않도록 열어 둔다. */
+  private readonly archiveRetryMs: number
+
+  constructor(opts?: { persist?: boolean; dataDir?: string; archiveRetryMs?: number }) {
     this.persist = opts?.persist === true
     this.roomDir = join(opts?.dataDir ?? join(process.cwd(), 'data'), 'rooms')
+    this.archiveRetryMs = opts?.archiveRetryMs ?? ARCHIVE_RETRY_MS
     if (this.persist) this.loadAll()
   }
 
@@ -1170,7 +1514,7 @@ export class RoomStore {
    *
    * 방 전체 스냅샷은 8초마다 몰아서 쓴다. 그 사이에 서버가 내려가면 그 몇 초가 사라지고,
    * 스냅샷 쓰기가 막힌 방(너무 커서 직렬화가 안 되거나 디스크가 찬 경우)은 재시작하는 순간
-   * 마지막 저장 이후가 통째로 사라진다 — 실제로 그렇게 잃었다.
+   * 마지막 저장 이후가 통째로 사라진다.
    * 그래서 말은 오간 즉시 이 기록장에 한 줄씩 남기고, 스냅샷이 성공한 만큼만 잘라 낸다.
    * 쓰기가 실패해도 대화 자체는 막지 않는다(대신 관리 화면에 남긴다).
    */
@@ -1229,6 +1573,476 @@ export class RoomStore {
     } catch {
       return 0
     }
+  }
+
+  // ── 대화 보관소 ──
+  // 방이 메모리에 들고 있을 수 있는 대화 수에는 끝이 있지만, 오간 말에는 끝이 없어야 한다.
+  // 그래서 라이브 창에서 밀려나는 앞부분을 지우지 않고 여기로 옮긴다. 이 파일은 한 번 쓰면
+  // 방을 지우거나 소유자가 채팅을 비울 때 말고는 줄지 않는다(스냅샷·기록장과 달리 정리 대상이 아니다).
+  //
+  // 한 줄이 대화 하나이며, 두상처럼 큰 값은 같은 조각 안에서 한 번만 적고 뒤에서는 열쇠로만 가리킨다
+  // (같은 두상이 만 번 반복되면 보관소가 대화가 아니라 그림으로 가득 차기 때문).
+
+  /** 보관소 조각 경로. 번호가 클수록 최근 몫이다. */
+  private archivePath(id: string, part: number): string {
+    return join(this.roomDir, id + '.archive.' + String(part).padStart(3, '0') + '.jsonl')
+  }
+
+  /** 이 방의 보관소 조각 번호(오름차순). 없으면 빈 배열. */
+  private archiveParts(id: string): number[] {
+    try {
+      if (!existsSync(this.roomDir)) return []
+      const head = id + '.archive.'
+      const out: number[] = []
+      for (const f of readdirSync(this.roomDir)) {
+        if (!f.startsWith(head) || !f.endsWith('.jsonl')) continue
+        const n = Number(f.slice(head.length, -'.jsonl'.length))
+        if (Number.isInteger(n) && n > 0) out.push(n)
+      }
+      return out.sort((a, b) => a - b)
+    } catch {
+      return []
+    }
+  }
+
+  /** 보관된 대화가 붙잡고 있는 자산 목록 파일. 조각과 함께 나고 함께 걷힌다. */
+  private archiveRefsPath(id: string): string {
+    return join(this.roomDir, id + '.archive.refs')
+  }
+
+  /**
+   * 이 방의 보관 대화가 붙잡고 있는 자산 해시 집합.
+   * 목록 파일이 없으면 조각을 한 번 통째로 훑어 세우고 파일로 남긴다(이 판 이전에 쌓인 보관소 대비).
+   */
+  private archiveRefSet(roomId: string): Set<string> {
+    const cached = this.archiveRefs.get(roomId)
+    if (cached) return cached
+    const out = new Set<string>()
+    let loaded = false
+    try {
+      for (const line of splitLines(readFileSync(this.archiveRefsPath(roomId)))) {
+        const h = line.toString('utf8').trim()
+        if (h) out.add(h)
+      }
+      loaded = true
+    } catch {
+      loaded = false // 목록이 아직 없다 — 아래에서 세운다
+    }
+    if (!loaded) {
+      const parts = this.archiveParts(roomId)
+      if (parts.length) {
+        for (const p of parts) {
+          try {
+            const text = readFileSync(this.archivePath(roomId, p), 'utf8')
+            scanAssetRefs(text, out) // 본문에 참조로 남은 그림
+            // 사전에 통째로 실린 두상 — 덧붙일 때와 같은 기준으로 세야 목록이 어긋나지 않는다.
+            for (const mt of text.matchAll(ARCHIVE_AVATAR_KEY_RE)) out.add(mt[1])
+          } catch {
+            /* 조각 하나를 못 읽어도 나머지는 센다 */
+          }
+        }
+        try {
+          writeFileSync(this.archiveRefsPath(roomId), [...out].map((h) => h + '\n').join(''), 'utf8')
+        } catch {
+          /* 못 남겨도 이번 가동 동안은 메모리로 버틴다 */
+        }
+      }
+    }
+    this.archiveRefs.set(roomId, out)
+    return out
+  }
+
+  /** 지금 쓰고 있는 조각(없으면 폴더를 한 번 훑어 세운다). 이후로는 들고 있는 값만 쓴다. */
+  private archiveTip(roomId: string): { part: number; size: number; keys: Set<string> } {
+    let tip = this.archiveTips.get(roomId)
+    if (!tip) {
+      const parts = this.archiveParts(roomId)
+      const part = parts.length ? parts[parts.length - 1] : 1
+      let size = 0
+      try {
+        size = statSync(this.archivePath(roomId, part)).size
+      } catch {
+        size = 0 // 아직 없는 조각 — 0 부터 시작
+      }
+      if (size > 0) {
+        // 끝 줄이 개행으로 닫혔는지 본다 — 정전으로 반쪽만 남은 줄 뒤에 다음 몫을 그대로 이어 붙이면
+        // 두 줄이 한 줄로 붙어 함께 못 읽게 되는데, 새로 붙인 쪽은 이미 메모리에서 덜어낸 뒤라 사본이 없다.
+        // 반쪽 줄은 개행으로 닫아 그 줄 하나만 잃는 것으로 끝낸다(그쪽은 스냅샷·기록장에 남아 있다).
+        try {
+          const fd = openSync(this.archivePath(roomId, part), 'r')
+          try {
+            const last = Buffer.alloc(1)
+            readSync(fd, last, 0, 1, size - 1)
+            if (last[0] !== 0x0a) {
+              appendFileSync(this.archivePath(roomId, part), '\n', 'utf8')
+              size += 1
+            }
+          } finally {
+            closeSync(fd)
+          }
+        } catch {
+          /* 못 보면 그대로 이어 쓴다 — 확인 실패가 보관 자체를 막지는 않게 */
+        }
+      }
+      // 이어 쓰는 조각의 두상 사전은 비운 채로 시작한다 — 이미 적힌 그림을 한 번 더 적을 뿐 손실은 없다.
+      tip = { part, size, keys: new Set<string>() }
+      this.archiveTips.set(roomId, tip)
+    }
+    return tip
+  }
+
+  /**
+   * 대화를 보관소 끝에 덧붙인다. 성공하면 true — **false 면 부르는 쪽은 메모리에서 덜어내면 안 된다.**
+   * 큰 두상은 이 조각에 처음 나올 때만 통째로 적고, 그 뒤로는 열쇠로만 가리킨다.
+   */
+  private archiveAppend(roomId: string, messages: ChatMessage[]): boolean {
+    if (!this.persist || !messages.length) return true
+    // 실패하면 여기까지 되잘라 '디스크에는 적혔는데 아무도 모르는' 반쪽 상태를 남기지 않는다.
+    // 그 상태를 두면 다음 회차가 같은 앞부분을 통째로 다시 적어 조각이 눈덩이처럼 붇는다.
+    const undo: { part: number; size: number }[] = []
+    try {
+      this.ensureRoomDir()
+      const tip = this.archiveTip(roomId)
+      const refs = this.archiveRefSet(roomId)
+      // 쓰기가 끝나기 전에는 들고 있는 값을 고치지 않는다 — 실패했는데 '적었다'고 표시해 두면,
+      // 다음 시도에서 두상 사전 줄을 건너뛰어 그 그림이 어디에도 없게 된다.
+      let part = tip.part
+      let size = tip.size
+      const keys = new Set(tip.keys) // 조각이 바뀌면 두상 사전도 새로 시작한다
+      const addedRefs = new Set<string>()
+      let body = ''
+      let pending = 0 // 아직 안 내보낸 몫의 바이트 수 — 조각 상한은 이것까지 세어야 걸린다
+      /** 모인 몫을 지금 조각에 내보낸다. 실패하면 catch 가 되돌린다. */
+      const emit = (): void => {
+        if (!body) return
+        let before = 0
+        try {
+          before = statSync(this.archivePath(roomId, part)).size
+        } catch {
+          before = 0 // 아직 없는 조각
+        }
+        undo.push({ part, size: before })
+        appendFileSync(this.archivePath(roomId, part), body, 'utf8')
+        size += pending
+        pending = 0
+        // 이 대화가 붙잡고 있는 그림도 함께 적어 둔다 — 자산 청소가 살아 있는 그림으로 세게 한다.
+        // 본문에 참조로 남는 그림(asset:…)과, 사전에 통째로 실린 두상 둘 다 세야 한다.
+        const fresh = new Set<string>()
+        scanAssetRefs(body, fresh)
+        for (const k of keys) if (!refs.has(k)) fresh.add(k)
+        const add = [...fresh].filter((h) => !refs.has(h) && !addedRefs.has(h))
+        if (add.length) {
+          appendFileSync(this.archiveRefsPath(roomId), add.map((h) => h + '\n').join(''), 'utf8')
+          for (const h of add) addedRefs.add(h)
+        }
+        body = ''
+      }
+      /** 한 줄을 모아 두고 그 길이만큼 센다. */
+      const push = (line: string): void => {
+        body += line + '\n'
+        pending += Buffer.byteLength(line, 'utf8') + 1
+      }
+      for (const m of messages) {
+        // 한 번에 큰 묶음이 들어와도(계정 이전 가져오기 등) 조각 상한을 지킨다 — 넘치면 그 자리에서 조각을 넘긴다.
+        if (size + pending >= ARCHIVE_PART_BYTES && part < ARCHIVE_PART_MAX) {
+          emit()
+          part++
+          size = 0
+          keys.clear()
+        }
+        const key = m.avatar ? dataUrlHash(m.avatar) : null
+        if (!key) {
+          push(JSON.stringify({ op: 'm', m }))
+          continue
+        }
+        if (!keys.has(key)) {
+          push(JSON.stringify({ op: 'av', k: key, d: m.avatar }))
+          keys.add(key)
+        }
+        const lean: ChatMessage = { ...m }
+        delete lean.avatar
+        push(JSON.stringify({ op: 'm', m: lean, a: key }))
+      }
+      emit()
+      // 여기까지 왔으면 확정 — 이제야 들고 있는 값을 옮긴다.
+      tip.part = part
+      tip.size = size
+      tip.keys.clear()
+      for (const k of keys) tip.keys.add(k)
+      for (const h of addedRefs) refs.add(h)
+      this.archiveNone.delete(roomId)
+      this.archiveTrouble.delete(roomId) // 다시 써진다 — 막혔다는 표시를 걷는다
+      return true
+    } catch (e) {
+      // 나가다 만 몫을 되잘라 없던 일로 만든다(되자르기까지 실패하면 아래 알림으로 남는다).
+      for (const u of undo.reverse()) {
+        try {
+          truncateSync(this.archivePath(roomId, u.part), u.size)
+        } catch {
+          // 되자르기 실패 — 중복이 남을 수 있고(읽을 때 같은 id 를 걸러 낸다), 꼬리가 반쪽 줄로
+          // 끊겨 있을 수도 있다. 들고 있던 조각 정보를 버려, 다음 시도가 꼬리부터 다시 살피게 한다.
+          this.archiveTips.delete(roomId)
+        }
+      }
+      // 여기서 실패했다는 것은 덜어낼 대화의 갈 곳이 없다는 뜻이다. 관리 화면에 남기고,
+      // 부르는 쪽은 메모리에 그대로 둔다(줄지 않는 대신 잃지도 않는다).
+      // 방 저장(.json)이 잘되면 saveTrouble 은 비워지므로, 보관 쪽 사유는 따로 들고 있어야 감춰지지 않는다.
+      const first = !this.archiveTrouble.has(roomId)
+      this.archiveTrouble.set(roomId, `대화 보관소 쓰기 실패: ${String(e)}`)
+      // 로그는 처음 한 번만 — 말이 올 때마다 스택을 찍으면 진짜 원인이 그 안에 묻힌다(재시도는 쉬었다 한다).
+      if (first) console.error(`[rooms] ${roomId} 대화 보관 실패. 오래된 대화를 메모리에 그대로 둔다:`, e)
+      return false
+    }
+  }
+
+  /**
+   * 보관소 조각 하나를 통째로 읽어 대화 목록으로 되돌린다(두상 사전 해소 포함). 깨진 줄은 건너뛴다.
+   * 방금 읽은 조각 하나는 들고 있는다 — 나눠 읽기는 같은 조각을 여러 번 훑으므로,
+   * 캐시가 없으면 한 번 넘길 때마다 8MB 파일을 다시 읽고 다시 파싱해 서버가 그 동안 멈춘다.
+   */
+  private archiveRead(roomId: string, part: number): ChatMessage[] {
+    let size = -1
+    try {
+      size = statSync(this.archivePath(roomId, part)).size
+    } catch {
+      return []
+    }
+    const hit = this.archivePages.find((p) => p.roomId === roomId && p.part === part && p.size === size)
+    if (hit) return hit.messages
+    let lines: Buffer[]
+    try {
+      lines = splitLines(readFileSync(this.archivePath(roomId, part)))
+    } catch {
+      return []
+    }
+    const pool = new Map<string, string>()
+    const out: ChatMessage[] = []
+    for (const line of lines) {
+      if (!line.length) continue
+      try {
+        const e = JSON.parse(line.toString('utf8')) as Record<string, unknown>
+        if (e.op === 'av') {
+          if (typeof e.k === 'string' && typeof e.d === 'string') pool.set(e.k, e.d)
+          continue
+        }
+        if (e.op !== 'm' || !e.m || typeof e.m !== 'object') continue
+        const m = e.m as ChatMessage
+        if (typeof m.id !== 'string' || !m.id) continue
+        if (typeof e.a === 'string') {
+          const avatar = pool.get(e.a)
+          if (avatar) m.avatar = avatar
+        }
+        out.push(m)
+      } catch {
+        /* 줄 하나가 깨져도 나머지는 살린다 */
+      }
+    }
+    this.archivePages.unshift({ roomId, part, size, messages: out })
+    if (this.archivePages.length > ARCHIVE_PAGE_CACHE) this.archivePages.length = ARCHIVE_PAGE_CACHE
+    return out
+  }
+
+  /**
+   * 라이브 창에서 넘치는 앞부분을 보관소로 옮기고 메모리에서 덜어낸다.
+   * 보관에 실패하면 덜어내지 않는다 — 사본 없이 지우면 그 대화는 어디에도 남지 않는다.
+   */
+  private evictOldest(room: Room, keep: number): void {
+    if (room.messages.length <= keep) return
+    if (Date.now() >= (this.archiveRetryAt.get(room.id) ?? 0)) {
+      // 한 번에 옮기는 몫에 끝을 둔다 — 쓰기가 막혀 있으면 실패할 때마다 밀린 전량을 다시 직렬화하게 되고,
+      // 그 비용이 쌓인 만큼 커져(동기 실행이라) 방 하나가 서버 전체를 붙든다.
+      // 다만 잘 써지는 동안에는 다 옮길 때까지 배치를 이어 간다 — 계정 이전 가져오기처럼 한 번에
+      // 수만 건이 올 때 한 배치만 옮기고 손을 놓으면, 나머지가 아래 마지막 선에서 사본 없이 잘려 나간다.
+      while (room.messages.length > keep) {
+        const take = Math.min(room.messages.length - keep, ARCHIVE_APPEND_MAX)
+        if (!this.archiveAppend(room.id, room.messages.slice(0, take))) {
+          this.archiveRetryAt.set(room.id, Date.now() + this.archiveRetryMs)
+          break
+        }
+        this.archiveRetryAt.delete(room.id)
+        room.messages.splice(0, take)
+      }
+      if (room.messages.length <= keep) return
+    }
+    // 보관이 막힌 동안에도 마지막 선은 있어야 한다. 여기까지 왔다면 디스크가 이미 망가진 상태다 —
+    // 그대로 두면 이 방이 부풀어 서버가 죽고, 그러면 다른 방들의 최근 대화까지 함께 잃는다.
+    const over = room.messages.length - MAX_HISTORY_HARD
+    if (over > 0) {
+      room.messages.splice(0, over)
+      this.saveLoss.set(
+        room.id,
+        `대화 보관소에 쓰지 못해 오래된 대화를 덜어냈습니다. 디스크 여유와 데이터 폴더 권한을 확인해 주세요.`
+      )
+    }
+  }
+
+  /** 방의 보관소를 걷는다 — 방을 지우거나 소유자가 채팅을 비울 때만. */
+  private removeArchive(id: string): void {
+    if (!this.persist) return
+    for (const p of this.archiveParts(id)) {
+      try {
+        unlinkSync(this.archivePath(id, p))
+      } catch {
+        /* 이미 없으면 그만 */
+      }
+    }
+    try {
+      unlinkSync(this.archiveRefsPath(id)) // 그림 목록도 함께 — 남겨 두면 지운 방의 그림을 영영 붙잡는다
+    } catch {
+      /* 이미 없으면 그만 */
+    }
+    this.archiveTips.delete(id)
+    this.archiveRefs.delete(id)
+    this.archiveNone.delete(id)
+    this.archiveRetryAt.delete(id)
+    this.archiveTrouble.delete(id)
+    this.archivePages = this.archivePages.filter((p) => p.roomId !== id)
+  }
+
+  /** 보관소에 담긴 대화가 있는지(채팅 창의 '더 불러오기' 표시 여부). */
+  hasArchive(roomId: string): boolean {
+    if (!this.persist) return false
+    if (this.archiveNone.has(roomId)) return false // 없다고 이미 확인한 방(대부분이 여기)
+    if (this.archiveTips.has(roomId)) return true // 이 판에서 보관해 본 방
+    // 조각은 1번부터 나고 지워지지 않는다 — 폴더를 통째로 훑기 전에 첫 조각부터 본다(입장마다 도는 길이다).
+    try {
+      if (existsSync(this.archivePath(roomId, 1))) return true
+    } catch {
+      /* 아래에서 다시 본다 */
+    }
+    if (this.archiveParts(roomId).length > 0) return true
+    this.archiveNone.add(roomId) // 다음 입장부터는 폴더를 다시 훑지 않는다(보관이 시작되면 지워진다)
+    return false
+  }
+
+  /**
+   * 보관 대화 되읽기(입장 스냅샷과 같은 꼴) — 열람권 필터와 두상 풀 분리까지 마친 결과.
+   * 방이 없거나 그 사람이 방에 없으면 null.
+   */
+  archivedFor(
+    roomId: string,
+    viewer: { playerId: string; role: Participant['role'] },
+    cursor: { part: number; line: number } | null,
+    limit: number
+  ): { messages: ChatMessage[]; avatarPool: string[]; cursor: { part: number; line: number } | null } | null {
+    const room = this.rooms.get(roomId)
+    if (!room) return null
+    const got = this.archivedBefore(roomId, cursor, limit, (m) =>
+      canSeeMessage(m, viewer, (gid) => this.canAccessChannel(roomId, gid, viewer.playerId))
+    )
+    const { messages, avatarPool } = packAvatars(got.messages)
+    return { messages, avatarPool, cursor: got.cursor }
+  }
+
+  /**
+   * 보관된 대화를 처음부터 끝까지(그 사람이 볼 수 있는 것만). 계정 이전용 내보내기가 쓴다.
+   * 통째로 메모리에 올리는 길이라 상한을 둔다 — 넘치면 최근 쪽을 남기고 truncated 로 알린다.
+   */
+  archivedAll(
+    roomId: string,
+    viewer: { playerId: string; role: Participant['role'] },
+    max = ARCHIVE_EXPORT_MAX
+  ): { messages: ChatMessage[]; truncated: boolean } {
+    const parts = this.archiveParts(roomId)
+    if (!parts.length) return { messages: [], truncated: false }
+    // 방장은 지금 접속 중이 아니어도 그 방의 GM 이다 — 라이브 몫을 거르는 규칙과 같아야
+    // 자기 방 그룹 대화가 보관분에서만 조용히 빠지는 일이 없다(exportOwnedBy 와 짝).
+    // 다만 **지운 채널까지 통과시키면 안 된다** — 라이브 몫은 지울 때 함께 사라지지만 보관분은 남아 있어서,
+    // 그냥 두면 '지웠다'고 한 그룹 대화가 내보내기 파일에서만 되살아난다.
+    const room = this.rooms.get(roomId)
+    const canSee = (m: ChatMessage): boolean =>
+      canSeeMessage(
+        m,
+        viewer,
+        (gid) =>
+          !!room?.channels.has(gid) &&
+          (viewer.role === 'GM' || this.canAccessChannel(roomId, gid, viewer.playerId))
+      )
+    const out: ChatMessage[] = []
+    // 서버가 갑자기 죽었다 살아난 회차에는 같은 말이 조각에 두 번 적혀 있을 수 있다 — 내보내기에는 한 번만 싣는다.
+    const seen = new Set<string>()
+    let truncated = false
+    // 뒤에서부터 채운다 — 상한에 걸리면 최근 쪽이 남아야 한다.
+    for (let i = parts.length - 1; i >= 0; i--) {
+      const chunk = this.archiveRead(roomId, parts[i]).filter((m) => {
+        if (!canSee(m) || seen.has(m.id)) return false
+        seen.add(m.id)
+        return true
+      })
+      if (out.length + chunk.length > max) {
+        out.unshift(...chunk.slice(chunk.length - (max - out.length)))
+        truncated = true
+        break
+      }
+      out.unshift(...chunk)
+    }
+    return { messages: out, truncated }
+  }
+
+  /** 방별 보관소 크기(바이트) — 관리 화면 표시용. */
+  archiveBytes(roomId: string): number {
+    let sum = 0
+    for (const p of this.archiveParts(roomId)) {
+      try {
+        sum += statSync(this.archivePath(roomId, p)).size
+      } catch {
+        /* 세는 사이 사라졌으면 그만 */
+      }
+    }
+    return sum
+  }
+
+  /**
+   * 보관된 대화를 뒤에서부터 되읽는다(오래된 순으로 정렬해 돌려준다).
+   * cursor 는 다음 요청에 그대로 돌려주면 되는 표식이며, null 이면 보관소의 맨 끝부터 읽는다.
+   * 볼 수 없는 대화(귓속말·비밀·남의 그룹)는 여기서 걸러 내보낸다 — 화면 은닉을 믿지 않는다.
+   */
+  archivedBefore(
+    roomId: string,
+    cursor: { part: number; line: number } | null,
+    limit: number,
+    canSee: (m: ChatMessage) => boolean
+  ): { messages: ChatMessage[]; cursor: { part: number; line: number } | null } {
+    const parts = this.archiveParts(roomId)
+    if (!parts.length) return { messages: [], cursor: null }
+    // 정수로 못 박는다 — 소수가 새어 들어오면 줄 번호가 소수가 되고, 그 표식은 다음 요청에서 거부돼
+    // 되읽기가 그 자리에서 영영 멈춘다.
+    const want = Math.max(1, Math.min(ARCHIVE_PAGE_MAX, Math.floor(Number(limit) || 0) || 1))
+    let pi = parts.length - 1
+    let line = -1 // -1 = 이 조각의 끝에서부터
+    if (cursor) {
+      pi = parts.indexOf(cursor.part)
+      if (pi < 0) return { messages: [], cursor: null } // 그 사이 걷힌 조각 — 더 줄 것이 없다
+      line = cursor.line
+    }
+    const out: ChatMessage[] = []
+    // 서버가 갑자기 죽었다 살아난 회차에는 같은 말이 조각에 두 번 적혀 있을 수 있다 — 한 묶음 안에서는 한 번만 담는다.
+    const seen = new Set<string>()
+    let scanned = 0
+    while (pi >= 0 && out.length < want && scanned < ARCHIVE_SCAN_LIMIT) {
+      const all = this.archiveRead(roomId, parts[pi])
+      if (line < 0 || line > all.length) line = all.length
+      if (line === 0) {
+        pi--
+        line = -1
+        continue
+      }
+      const from = Math.max(0, line - (want - out.length))
+      out.unshift(
+        ...all.slice(from, line).filter((m) => {
+          if (!canSee(m) || seen.has(m.id)) return false
+          seen.add(m.id)
+          return true
+        })
+      )
+      scanned += line - from
+      line = from
+      if (line === 0) {
+        pi--
+        line = -1
+      }
+    }
+    return { messages: out, cursor: pi >= 0 ? { part: parts[pi], line } : null }
   }
 
   /**
@@ -1290,7 +2104,7 @@ export class RoomStore {
       applied++
     }
     placePending(room.messages.length)
-    if (room.messages.length > MAX_HISTORY) room.messages.splice(0, room.messages.length - MAX_HISTORY)
+    this.evictOldest(room, MAX_HISTORY)
     return applied
   }
 
@@ -1404,7 +2218,7 @@ export class RoomStore {
       }
       // 끝까지 아는 말을 못 만났다 = 기록장이 스냅샷 뒤에 이어지는 몫이다. 뒤에 붙인다.
       placePending(room.messages.length)
-      if (room.messages.length > MAX_HISTORY) room.messages.splice(0, room.messages.length - MAX_HISTORY)
+      this.evictOldest(room, MAX_HISTORY)
     } catch (e) {
       console.error(`[rooms] ${room.id} 대화 기록장 복구 실패:`, e)
     }
@@ -1534,14 +2348,14 @@ export class RoomStore {
       const kept = this.serializeTrimmed(room)
       if (!kept) {
         this.saveTrouble.set(room.id, `직렬화 실패: ${String(e)}`)
-        console.error(`[rooms] ${room.id}(${room.title}) 직렬화 실패 — 줄여서도 저장하지 못했다:`, e)
+        console.error(`[rooms] ${room.id}(${room.title}) 직렬화 실패. 줄여서도 저장하지 못했다:`, e)
         return Promise.resolve()
       }
       this.saveTrouble.set(
         room.id,
-        `방이 너무 커서 온전한 저장이 실패했습니다 — 대화는 이전 저장본·기록장·비상 사본으로 지키는 중입니다`
+        `방이 너무 커서 온전한 저장이 실패했습니다. 대화는 이전 저장본·기록장·비상 사본으로 지키는 중입니다`
       )
-      console.error(`[rooms] ${room.id}(${room.title}) 너무 큼 — 최근 대화 스냅샷을 비상 사본에 둔다(덜어낸 ${kept.dropped}개는 이전 저장본과 기록장 몫).`)
+      console.error(`[rooms] ${room.id}(${room.title}) 너무 큼. 최근 대화 스냅샷을 비상 사본에 둔다(덜어낸 ${kept.dropped}개는 이전 저장본과 기록장 몫).`)
       json = kept.json
       at = room.lastActivityAt
       trimmedSave = true
@@ -1645,6 +2459,9 @@ export class RoomStore {
   saveTroubles(): { id: string; title: string; reason: string; lost?: boolean }[] {
     const out = [...this.saveLoss].map(([id, reason]) => ({ id, title: this.rooms.get(id)?.title ?? '', reason, lost: true }))
     for (const [id, reason] of this.saveTrouble) out.push({ id, title: this.rooms.get(id)?.title ?? '', reason, lost: false })
+    // 보관 쪽 말썽은 따로 들고 있다 — 방 저장이 잘된다고 함께 지워지면 막힌 보관소를 아무도 모른다.
+    for (const [id, reason] of this.archiveTrouble)
+      out.push({ id, title: this.rooms.get(id)?.title ?? '', reason, lost: false })
     return out
   }
 
@@ -1668,6 +2485,7 @@ export class RoomStore {
       if (existsSync(j)) unlinkSync(j)
       const r = this.rescuePath(id)
       if (existsSync(r)) unlinkSync(r)
+      this.removeArchive(id) // 방을 지우면 보관해 둔 대화도 함께 걷는다
     } catch (e) {
       console.error(`[rooms] ${id} 파일 삭제 실패:`, e)
     }
@@ -1683,6 +2501,7 @@ export class RoomStore {
       title: room.title,
       cardImage: room.cardImage,
       owner: room.ownerId === accountId,
+      gm: isGm(room, accountId), // 소유자 전용 동작(삭제·복사·이름)과 GM 표시를 가르기 위해 따로 싣는다
       memberCount: room.members.size,
       online: [...room.participants.values()].filter((p) => p.connected).length,
       updatedAt: room.lastActivityAt
@@ -1720,10 +2539,12 @@ export class RoomStore {
       code,
       title: (host.title ?? '').trim().slice(0, 80) || '새 세션',
       ownerId,
+      gmIds: new Set(),
       members: new Set([ownerId]),
       cardImage: capImage(host.cardImage),
       participants: new Map([[self.playerId, self]]),
       characters: new Map(),
+      charPool: new Map(),
       handouts: new Map(),
       maps: new Map([[firstMap.id, firstMap]]),
       activeMapId: firstMap.id,
@@ -1756,6 +2577,8 @@ export class RoomStore {
     if (!roomId) return { error: '존재하지 않는 초대 코드입니다.' }
     const room = this.rooms.get(roomId)
     if (!room) return { error: '방을 찾을 수 없습니다.' }
+    const shut = this.lockedOut(room, player)
+    if (shut) return shut
     return this.admit(room, player)
   }
 
@@ -1767,10 +2590,28 @@ export class RoomStore {
     const room = this.rooms.get(roomId)
     if (!room) return { error: '세션을 찾을 수 없습니다.' }
     const acct = player.accountId
-    if (acct && room.ownerId !== acct && !room.members.has(acct)) {
+    if (acct && !isGm(room, acct) && !room.members.has(acct)) {
       return { error: '이 세션의 멤버가 아닙니다. 초대 코드로 입장하세요.' }
     }
+    const shut = this.lockedOut(room, player)
+    if (shut) return shut
     return this.admit(room, player)
+  }
+
+  /**
+   * 잠긴 방인가 — 방을 만든 사람 말고는 못 들어온다.
+   *
+   * 이미 들어와 있던 사람(끊겼다 돌아오는 사람 포함)은 통과시킨다. 잠금은 '준비 중이니 새로 들어오지
+   * 말라'는 뜻이지, 하던 사람을 끊는 기능이 아니다 — 그렇게 하면 GM 이 잠근 순간 방이 텅 빈다.
+   */
+  private lockedOut(
+    room: Room,
+    player: { playerId: string; accountId?: string }
+  ): { error: string } | null {
+    if (!room.locked) return null
+    if (isGm(room, player.accountId)) return null
+    if (room.participants.has(player.playerId)) return null
+    return { error: '지금은 준비 중이라 들어올 수 없습니다. 방을 만든 사람에게 물어봐 주세요.' }
   }
 
   /** 공통 입장 처리: 멤버 등록 + 재접속/신규 참가자(소유자=GM, 그 외 PL). */
@@ -1780,19 +2621,21 @@ export class RoomStore {
   ): { room: Room; self: Participant } {
     room.lastActivityAt = Date.now()
     if (player.accountId) room.members.add(player.accountId)
+    const gm = isGm(room, player.accountId)
     const existing = room.participants.get(player.playerId)
     if (existing) {
       existing.connected = true
       if (player.nick.trim()) existing.nick = player.nick.trim()
       if (player.color) existing.color = player.color
+      // 자리를 비운 사이에 GM 을 받았거나 잃었을 수 있다 — 자격의 진실원본은 gmIds 이므로 여기서 맞춘다.
+      if (player.accountId) existing.role = gm ? 'GM' : 'PL'
       return { room, self: existing }
     }
-    const isOwner = !!player.accountId && room.ownerId === player.accountId
     const self: Participant = {
       playerId: player.playerId,
-      nick: player.nick.trim() || (isOwner ? 'GM' : '탐사자'),
-      color: player.color || (isOwner ? DEFAULT_GM_COLOR : DEFAULT_PL_COLOR),
-      role: isOwner ? 'GM' : 'PL', // 소유자는 재입장 시에도 GM 복원(릴레이 재시작 후 participants 비어도)
+      nick: player.nick.trim() || (gm ? 'GM' : '탐사자'),
+      color: player.color || (gm ? DEFAULT_GM_COLOR : DEFAULT_PL_COLOR),
+      role: gm ? 'GM' : 'PL', // 소유자·공동 GM 은 재입장 시에도 복원(릴레이 재시작 후 participants 비어도)
       connected: true
     }
     room.participants.set(self.playerId, self)
@@ -1853,8 +2696,13 @@ export class RoomStore {
     if (room.ownerId === accountId) return { error: '방장은 목록에서 나갈 수 없습니다. 방 삭제를 이용하세요.' }
     if (!room.members.has(accountId)) return { error: '이 세션의 멤버가 아닙니다.' }
     room.members.delete(accountId)
+    // 스스로 목록에서 빠진 사람의 GM 자격도 함께 거둔다 — 남겨 두면 초대 코드로 다시 들어오는 순간
+    // 아무도 지정하지 않았는데 조용히 GM 으로 돌아온다.
+    room.gmIds.delete(accountId)
     room.participants.delete(playerId)
     room.characters.delete(playerId)
+    // 아주 떠난 사람의 보관대 몫도 걷는다 — 안 걷으면 그 사람 그림이 방 파일과 입장 전송에 영원히 남는다.
+    this.dropPooledFor(room, playerId)
     room.charRooms.delete(playerId)
     room.lastActivityAt = Date.now() // dirty 마킹 — 자동저장(flushDirty)이 영속화
     return { ok: true }
@@ -1927,6 +2775,18 @@ export class RoomStore {
     return { ok: true, tables: room.madnessTables }
   }
 
+  /**
+   * 입실 잠금(공사중) 설정 — 방을 만든 사람 말고는 못 들어오게 한다.
+   * 이미 들어와 있는 사람은 내보내지 않는다(준비 중에 문만 닫는 것이지 쫓아내는 기능이 아니다).
+   */
+  setLocked(roomId: string, locked: boolean): { ok: boolean; locked: boolean } {
+    const room = this.rooms.get(roomId)
+    if (!room) return { ok: false, locked: false }
+    room.locked = locked || undefined
+    room.lastActivityAt = Date.now()
+    return { ok: true, locked }
+  }
+
   /** 행운 깎기(CoC7 하우스룰) 사용 여부 설정(GM 전용 — 권한 검증은 호출 측 relay). {ok,enabled} 반환. */
   setLuckEnabled(roomId: string, enabled: boolean): { ok: boolean; enabled: boolean } {
     const room = this.rooms.get(roomId)
@@ -1941,6 +2801,18 @@ export class RoomStore {
     const room = this.rooms.get(roomId)
     if (!room) return { ok: false, enabled: false }
     room.vnOverlay = enabled
+    room.lastActivityAt = Date.now()
+    return { ok: true, enabled }
+  }
+
+  /**
+   * GM 귓속말 열람 설정(GM 전용 — 권한 검증은 호출 측 relay). {ok,enabled} 반환.
+   * 켜고 끄는 것은 앞으로 오갈 말에만 미친다 — 이미 오간 말의 각인은 손대지 않는다.
+   */
+  setGmSeeWhispers(roomId: string, enabled: boolean): { ok: boolean; enabled: boolean } {
+    const room = this.rooms.get(roomId)
+    if (!room) return { ok: false, enabled: false }
+    room.gmSeeWhispers = enabled || undefined
     room.lastActivityAt = Date.now()
     return { ok: true, enabled }
   }
@@ -2082,7 +2954,20 @@ export class RoomStore {
     const room = this.rooms.get(roomId)
     if (!room) return false
     const had = room.channels.delete(id)
-    if (had) room.lastActivityAt = Date.now()
+    if (had) {
+      // 그룹 대화도 함께 지운다 — 채널이 없으면 열람 권한을 판정할 근거가 사라져 GM 조차 다시 볼 수 없다.
+      // 남겨 두면 아무도 못 보는 기록이 방 저장본에만 계속 쌓인다.
+      //
+      // 보관소로 이미 옮겨진 몫은 손대지 않는다. 보관소는 '오간 말은 지우지 않는다'가 약속인 곳이고,
+      // 되읽기는 canAccessChannel 이 없는 채널을 언제나 거절하므로(그래서 아무에게도 안 보인다)
+      // 여기서 그 파일을 다시 쓰는 것보다 그대로 두는 편이 안전하다.
+      const gone = room.messages.filter((m) => m.channel === 'group' && m.groupId === id)
+      if (gone.length) {
+        room.messages = room.messages.filter((m) => !(m.channel === 'group' && m.groupId === id))
+        for (const m of gone) this.journal(roomId, { op: 'del', id: m.id })
+      }
+      room.lastActivityAt = Date.now()
+    }
     return had
   }
 
@@ -2150,9 +3035,7 @@ export class RoomStore {
     const room = this.rooms.get(roomId)
     if (!room) return
     room.messages.push(message)
-    if (room.messages.length > MAX_HISTORY) {
-      room.messages.splice(0, room.messages.length - MAX_HISTORY)
-    }
+    this.evictOldest(room, MAX_HISTORY) // 넘치는 앞부분은 버리지 않고 보관소로
     room.lastActivityAt = Date.now()
     this.journal(roomId, { op: 'add', m: message })
   }
@@ -2223,8 +3106,55 @@ export class RoomStore {
       bio: typeof char.bio === 'string' ? char.bio.slice(0, 500) : undefined // 자기소개 길이 바운드
     }
     room.characters.set(char.playerId, stored)
+    // 지금 장착한 캐릭터는 곧 갈아입히면 로스터에서 밀려난다. 맵에 토큰을 놓아 둔 캐릭터가 그때
+    // 이름·색·두상·수치를 잃지 않도록, 캐릭터별로도 한 벌 남겨 둔다(같은 값의 사본).
+    if (stored.charId) this.setPooledCharacter(room, stored)
     room.lastActivityAt = Date.now()
     return stored
+  }
+
+  /**
+   * 캐릭터 보관대 — (playerId, charId) 로 색인한다. 로스터가 '지금 말하는 캐릭터' 한 명만 담는 것과 달리,
+   * 여기에는 이 방에서 쓰인 적 있는 캐릭터가 함께 남는다. 맵 토큰이 charId 로 자기 캐릭터를 찾을 때 본다.
+   */
+  private setPooledCharacter(room: Room, char: SharedCharacter): void {
+    const key = poolKey(char.playerId, char.charId)
+    if (!key) return
+    // 지운 뒤 다시 넣어 '가장 최근'이 맨 뒤로 가게 한다 — Map 은 이미 있는 키를 덮어써도 자리를 안 바꾼다.
+    // 그대로 두면 아래 축출이 '오래 안 쓴 것'이 아니라 '먼저 담긴 것'을 버려, 지금 쓰는 캐릭터가 밀려난다.
+    room.charPool.delete(key)
+    room.charPool.set(key, poolSubset(char))
+    trimCharPool(room)
+  }
+
+  /** 방을 아주 떠난 사람의 보관대 몫을 걷는다(재접속이 아니라 멤버십이 끊긴 경우). */
+  private dropPooledFor(room: Room, playerId: string): void {
+    const head = playerId.length + ':' + playerId
+    for (const k of [...room.charPool.keys()]) if (k.startsWith(head)) room.charPool.delete(k)
+  }
+
+  /** 보관대에 담긴 캐릭터 전부(스냅샷·입장 전달용). */
+  charPool(roomId: string): SharedCharacter[] {
+    const room = this.rooms.get(roomId)
+    return room ? [...room.charPool.values()] : []
+  }
+
+  /**
+   * 스탠딩을 뺀 정체성만 갱신(가벼운 발행). 같은 캐릭터를 계속 쓰는 중이면 보관 중인 스탠딩을 그대로 두고,
+   * 다른 캐릭터로 갈아입었으면 옛 스탠딩을 비운다(남겨 두면 무대에 엉뚱한 캐릭터의 그림이 선다).
+   * 비운 자리는 뒤이어 오는 char:update 가 채운다. 보관본이 아직 없으면 스탠딩 없는 상태로 새로 만든다.
+   */
+  mergeIdentity(roomId: string, ident: Omit<SharedCharacter, 'standings'>): SharedCharacter | undefined {
+    const room = this.rooms.get(roomId)
+    if (!room) return undefined
+    const prev = room.characters.get(ident.playerId)
+    const sameChar = !!prev && prev.charId === (capId(ident.charId) ?? '')
+    return this.setCharacter(roomId, {
+      ...ident,
+      standings: sameChar ? prev.standings : [],
+      // 표정은 남는 스탠딩 범위 안에서만 뜻이 있다 — 갈아입은 직후엔 0 으로(setCharacter 가 다시 보정).
+      currentExpression: sameChar ? ident.currentExpression : 0
+    })
   }
 
   /** 표정 인덱스만 갱신(잦은 변경). 보정된 인덱스 반환, 보관된 캐릭터 없으면 undefined. */
@@ -2301,8 +3231,8 @@ export class RoomStore {
    * 새 맵 생성. 저장본(와이어) + 표시 맵 목록이 바뀐 통합 토큰들을 함께 반환(방 없으면 undefined).
    *
    * 가져오기로 들어온 통합 레이어에는 '이 맵들에서만 보임'(mapIds)이 박혀 있다. 그래서 새 맵세트를
-   * 만들면 통합 레이어가 아무것도 안 보이는 빈 판이 나왔다 — 바로 아래 duplicateMap 은 이어받는데
-   * 여기만 빠져 있었다. 만든 사람이 보고 있던 맵에 보이던 것만 이어받는다(전부 이어받으면 서로 다른
+   * 만들 때 이어받지 않으면 통합 레이어가 아무것도 안 보이는 빈 판이 나온다 — 바로 아래 duplicateMap
+   * 과 짝을 맞춘다. 만든 사람이 보고 있던 맵에 보이던 것만 이어받는다(전부 이어받으면 서로 다른
    * 배치를 두 번 가져온 방에서 새 맵에 두 배치가 겹쳐 쏟아진다).
    *
    * ⚠ 기준 맵은 부르는 쪽이 알려 준다(baseMapId). 맵 전환은 개인 뷰라 room.activeMapId 는 전원 강제
@@ -2562,11 +3492,171 @@ export class RoomStore {
     room.lastActivityAt = Date.now()
     return room.visualCards
   }
+
+  // ===== 덱(카드 뭉치 · GM 이 만들고 방 전원이 뽑는다 — 권한 검증은 호출 측 relay) =====
+  /** 이 방의 덱 목록. 뷰어를 주면 그 사람에게 보일 몫으로, 주지 않으면 가장 좁게(감춘 덱은 카드·버린 더미를 비워) 내보낸다. */
+  decksFor(roomId: string, viewer?: { role: Participant['role']; playerId?: string }): DeckView[] {
+    return (this.rooms.get(roomId)?.decks ?? []).map((d) => deckView(d, viewer))
+  }
+
+  /** 덱 하나 찾기(내부 보관본) — 뽑기 권한 판정에 쓴다. */
+  getDeck(roomId: string, deckId: string): Deck | undefined {
+    return this.rooms.get(roomId)?.decks?.find((d) => d.id === deckId)
+  }
+
+  /**
+   * 덱 만들기/고치기(GM). id 없으면 새 덱.
+   *
+   * 카드 구성이 달라졌을 때만 더미를 다시 섞는다 — 이름이나 설정만 고쳤는데 진행 중인 판이
+   * 처음으로 되돌아가면 곤란하기 때문이다. 상한을 넘으면 undefined(호출 측이 조용히 무시).
+   */
+  upsertDeck(roomId: string, req: DeckUpsertReq): Deck | undefined {
+    const room = this.rooms.get(roomId)
+    if (!room) return undefined
+    const name = (typeof req?.name === 'string' ? req.name.trim() : '').slice(0, 40)
+    if (!name) return undefined
+    const cards = coerceDeckCards(req.cards)
+    if (!cards.length) return undefined
+    const decks = room.decks ?? []
+    const id = capId(req.id)
+    const at = id ? decks.findIndex((d) => d.id === id) : -1
+    const prev = at >= 0 ? decks[at] : undefined
+    if (!prev && decks.length >= MAX_DECKS) return undefined
+
+    /** 카드 구성이 그대로인지 — 장수까지 같아야 '안 바뀐 것'으로 본다. */
+    const sameCards =
+      !!prev &&
+      prev.cards.length === cards.length &&
+      prev.cards.every((c, i) => c.id === cards[i].id && (c.count ?? 1) === (cards[i].count ?? 1))
+
+    const deck: Deck = {
+      id: prev?.id ?? id ?? randomUUID(),
+      name,
+      cards,
+      draw: sameCards ? prev.draw : shufflePile(deckPile(cards)),
+      discard: sameCards ? prev.discard : [],
+      announce: req.announce !== false,
+      reshuffle: req.reshuffle === true,
+      revealCards: req.revealCards !== false,
+      who: req.who === 'gm' ? 'gm' : 'all',
+      createdAt: prev?.createdAt ?? Date.now()
+    }
+    if (at >= 0) decks[at] = deck
+    else decks.push(deck)
+    room.decks = decks
+    room.lastActivityAt = Date.now()
+    return deck
+  }
+
+  /** 덱 삭제(GM). 지웠으면 true. */
+  deleteDeck(roomId: string, deckId: string): boolean {
+    const room = this.rooms.get(roomId)
+    if (!room?.decks) return false
+    const next = room.decks.filter((d) => d.id !== deckId)
+    if (next.length === room.decks.length) return false
+    room.decks = next.length ? next : undefined
+    room.lastActivityAt = Date.now()
+    return true
+  }
+
+  /** 다시 섞기(GM) — 버린 더미까지 걷어 한 벌을 새로 섞는다. */
+  shuffleDeck(roomId: string, deckId: string): Deck | undefined {
+    const room = this.rooms.get(roomId)
+    const deck = room?.decks?.find((d) => d.id === deckId)
+    if (!room || !deck) return undefined
+    deck.draw = shufflePile(deckPile(deck.cards))
+    deck.discard = []
+    room.lastActivityAt = Date.now()
+    return deck
+  }
+
+  /**
+   * 뽑기 — 서버가 더미에서 꺼낸다.
+   *
+   * 클라이언트가 결과를 만들어 보내는 방식이면 남은 장수를 무시하고 얼마든지 뽑아낼 수 있고,
+   * 여러 사람이 같은 순간에 뽑으면 같은 카드가 두 번 나온다. 그래서 더미도 뽑기도 서버에만 둔다.
+   * 더미가 모자라면 있는 만큼만 준다(자동 섞기가 켜져 있으면 걷어서 다시 섞고 이어 뽑는다).
+   */
+  drawFromDeck(
+    roomId: string,
+    deckId: string,
+    count: number,
+    /** '비밀로' 뽑았으면 뽑은 사람 playerId — 버린 더미에 각인해 그 사람과 GM 에게만 보인다. */
+    secretBy?: string
+  ): { deck: Deck; cards: DeckCard[] } | undefined {
+    const room = this.rooms.get(roomId)
+    const deck = room?.decks?.find((d) => d.id === deckId)
+    if (!room || !deck) return undefined
+    const want = Math.max(1, Math.min(MAX_DECK_DRAW, Math.round(count) || 1))
+    const byId = new Map(deck.cards.map((c) => [c.id, c]))
+    const drawn: DeckCard[] = []
+    for (let i = 0; i < want; i++) {
+      if (!deck.draw.length) {
+        if (!deck.reshuffle || !deck.cards.length) break
+        // 자동 섞기 — 카드 정의에서 한 벌을 새로 만들어 섞고 버린 더미를 비운다(discard 를 걷어 쓰지 않는다).
+        // 정의가 하나도 없으면 만들 것이 없어 여기서 끝난다.
+        deck.draw = shufflePile(deckPile(deck.cards))
+        deck.discard = []
+      }
+      const id = deck.draw.pop()
+      if (!id) break
+      const card = byId.get(id)
+      if (!card) continue // 정의가 사라진 유령 카드는 조용히 건너뛴다
+      deck.discard.push(secretBy ? { id, by: secretBy } : { id })
+      drawn.push(card)
+    }
+    if (!drawn.length) return undefined
+    room.lastActivityAt = Date.now()
+    return { deck, cards: drawn }
+  }
+
   /** 다이스 결과 라벨로 카드 찾기 — 라벨('대성공' 등)이 카드 이름과 정확히 일치하면 그 카드(트리거용). */
   findCardByTitle(roomId: string, text: string): VisualCard | undefined {
     const t = text.trim()
     if (!t) return undefined
     return this.rooms.get(roomId)?.visualCards?.find((c) => c.name === t)
+  }
+
+  /**
+   * 판정 결과로 카드 찾기 — 이름이 딱 떨어지지 않아도 발동한다.
+   *
+   * 카드 이름이 '성공' 처럼 결과 라벨과 **정확히 같아야만** 뜨게 두면, GM 이 '성공 컷인'·'대성공!'
+   * 처럼 지은 카드는 영영 안 떠서 판정 컷인은 사실상 못 쓰고 텍스트로 부르는 길만 남는다.
+   *
+   * 그래서 '이름에 그 라벨이 들어 있으면' 발동으로 넓히되, 한 가지를 지킨다: '대성공!' 은 '성공'
+   * 카드로도 읽히므로, 카드마다 **이름에 들어 있는 라벨 중 가장 긴 것**을 그 카드의 뜻으로 보고
+   * 그것이 이번 결과의 라벨일 때만 튼다. 일반 성공에 '대성공!' 카드가 새어 나오지 않는다.
+   *
+   * @param keys 이번 결과의 라벨들(구체적인 것이 앞).
+   * @param allKeys 이 룰에서 나올 수 있는 라벨 전부 — 어느 라벨이 더 구체적인지 견주는 데 쓴다.
+   */
+  findCardForResult(roomId: string, keys: string[], allKeys: string[]): VisualCard | undefined {
+    const cards = this.rooms.get(roomId)?.visualCards
+    if (!cards?.length || !keys.length) return undefined
+    // keys 는 구체적인 것이 앞이다('대성공' → '성공'). 그 차례를 점수로 삼아, 더 구체적인 라벨을 뜻하는
+    // 카드가 언제나 이긴다. 등록 순서로 이기게 두면 '성공' 카드를 먼저 만든 방에서 대성공에도 그것이 뜬다.
+    const rank = new Map(keys.map((k, i) => [k, i]))
+    let hit: VisualCard | undefined
+    let hitRank = Number.MAX_SAFE_INTEGER
+    let hitExact = false
+    for (const c of cards) {
+      const name = (c.name ?? '').trim()
+      if (!name) continue
+      // 이름이 라벨 그대로면 그 라벨을 뜻하는 것이 분명하다. 아니면 이름이 품은 라벨 중 가장 긴 것으로 본다.
+      const exact = rank.has(name)
+      let best = ''
+      if (!exact) for (const k of allKeys) if (k && name.includes(k) && k.length > best.length) best = k
+      const key = exact ? name : best
+      const r = key ? rank.get(key) : undefined
+      if (r === undefined) continue
+      // 같은 구체성이면 이름이 라벨과 똑같은 쪽을 먼저, 그다음은 등록순.
+      if (r < hitRank || (r === hitRank && exact && !hitExact)) {
+        hit = c
+        hitRank = r
+        hitExact = exact
+      }
+    }
+    return hit
   }
   /**
    * 채팅·스크립트 본문으로 카드 찾기 — 화면에 보이는 평문 기준으로 카드 이름이 '포함'되면 그 카드.
@@ -2752,6 +3842,7 @@ export class RoomStore {
       rotation:
         typeof req.rotation === 'number' && Number.isFinite(req.rotation) ? req.rotation : existing?.rotation,
       charPlayerId: capId(req.charPlayerId) ?? existing?.charPlayerId,
+      charId: capId(req.charId) ?? existing?.charId,
       label: typeof req.label === 'string' ? req.label.slice(0, 200) : existing?.label,
       color: typeof req.color === 'string' ? req.color.slice(0, 32) : existing?.color,
       image: capImage(req.image) ?? existing?.image,
@@ -2794,7 +3885,7 @@ export class RoomStore {
       // 가져오기 출처 태그 — 편집(upsert)으로는 바뀌지 않는다(가져오기·로드에서만 부여).
       importId: existing?.importId,
       // 표시 맵 제한 — null 이면 해제(모든 맵에 표시), 배열이면 그 목록, 미지정이면 기존 보존.
-      // 가져오기가 박아 둔 제한을 사람이 풀 수 있어야 한다(새 맵세트가 빈 판으로 보이던 원인).
+      // 가져오기가 박아 둔 제한을 사람이 풀 수 있어야 한다(못 풀면 새 맵세트가 빈 판으로 보인다).
       mapIds:
         req.mapIds === null
           ? undefined
@@ -2894,42 +3985,203 @@ export class RoomStore {
   }
 
   /**
+   * 지금 보고 있는 화면의 겹침 순서 — 통합 레이어와 그 맵의 레이어를 한 줄로 세워 뒤→앞으로 돌려준다.
+   *
+   * 화면은 두 컬렉션을 한 배열에 담아 밴드별로 z 순으로 그린다. 순서를 매기는 쪽도 같은 줄을 보아야
+   * 목록에서 끌어 놓은 자리와 실제로 그려지는 자리가 어긋나지 않는다.
+   * z 가 같은 것끼리는 통합 레이어를 뒤에 두어 그리는 쪽의 순서(통합 먼저 넣고 맵 토큰을 얹는다)를 따른다.
+   */
+  private sceneStack(room: Room, sceneMapId: string): { token: Token; mapId: string }[] {
+    const rows: { token: Token; mapId: string; seq: number }[] = []
+    let seq = 0
+    for (const t of room.globalTokens?.values() ?? [])
+      // 표시 맵이 지정된 통합 레이어는 그 맵에서만 그려진다 — 안 보이는 것이 줄에 끼면 순번을 먹는다.
+      if (!t.mapIds || t.mapIds.includes(sceneMapId)) rows.push({ token: t, mapId: GLOBAL_MAP_ID, seq: seq++ })
+    if (sceneMapId !== GLOBAL_MAP_ID)
+      for (const t of room.maps.get(sceneMapId)?.tokens.values() ?? [])
+        rows.push({ token: t, mapId: sceneMapId, seq: seq++ })
+    rows.sort((a, b) => {
+      const d = LAYER_ORDER[a.token.layer ?? 'token'] - LAYER_ORDER[b.token.layer ?? 'token']
+      if (d !== 0) return d
+      const dz = (a.token.z ?? 0) - (b.token.z ?? 0)
+      return dz !== 0 ? dz : a.seq - b.seq
+    })
+    return rows.map(({ token, mapId }) => ({ token, mapId }))
+  }
+
+  /**
+   * 한 줄로 세운 순서를 z 로 다시 굳힌다 — 밴드마다, 고정하지 않은 것들에만 새 값을 매긴다.
+   *
+   * 밖에서 가져온 맵세트는 여러 오브젝트가 같은 z 를 쓰는 일이 흔한데, 그러면 '한 칸 앞으로'가 그 무리를
+   * 통째로 건너뛰어 끌어 놓은 자리에 내려앉지 않는다. 자리를 옮길 때마다 번호를 다시 매겨 같은 값을 없앤다.
+   *
+   * ⚠ pinned 는 '건드리면 안 되는 컬렉션'이다. 통합 레이어는 모든 맵이 함께 쓰므로, 이 맵에서 순서를
+   * 바꿨다고 통합 레이어의 z 를 다시 매기면 **다른 맵의 겹침이 소리 없이 뒤바뀐다**. 그래서 맵 토큰을
+   * 옮길 때는 통합 레이어를 고정하고, 고정된 이웃 사이의 빈 자리에 소수로 끼워 넣는다(z 는 실수여도 된다).
+   * 값이 실제로 달라진 것만 돌려주므로, 이미 정돈된 줄에서는 움직인 언저리만 다시 방송된다.
+   */
+  private renumber(
+    stack: { token: Token; mapId: string }[],
+    pinned?: string
+  ): { mapId: string; token: Token }[] {
+    const changed: { mapId: string; token: Token }[] = []
+    const byBand = new Map<TokenLayer, { token: Token; mapId: string }[]>()
+    for (const row of stack) {
+      const band = row.token.layer ?? 'token'
+      const list = byBand.get(band)
+      if (list) list.push(row)
+      else byBand.set(band, [row])
+    }
+    for (const rows of byBand.values()) {
+      // 고정된 이웃을 경계로 잘라, 그 사이의 자유로운 것들에만 값을 나눠 준다.
+      let i = 0
+      while (i < rows.length) {
+        if (pinned !== undefined && rows[i].mapId === pinned) {
+          i++
+          continue
+        }
+        let j = i
+        while (j < rows.length && !(pinned !== undefined && rows[j].mapId === pinned)) j++
+        const lo = i > 0 ? (rows[i - 1].token.z ?? 0) : undefined
+        const hi = j < rows.length ? (rows[j].token.z ?? 0) : undefined
+        const n = j - i
+        // 양쪽 경계가 없으면 1,2,3…, 한쪽만 있으면 그 옆으로 1씩, 둘 다 있으면 사이를 n+1 등분한다.
+        const from = lo ?? (hi !== undefined ? hi - (n + 1) : 0)
+        const to = hi ?? from + (n + 1)
+        const step = to > from ? (to - from) / (n + 1) : 1
+        for (let k = 0; k < n; k++) {
+          const row = rows[i + k]
+          const z = from + step * (k + 1)
+          if (row.token.z !== z) {
+            row.token.z = z
+            changed.push({ mapId: row.mapId, token: row.token })
+          }
+        }
+        i = j
+      }
+    }
+    return changed
+  }
+
+  /**
    * 토큰 z순서/레이어 변경(GM 전용 — 권한 검증은 호출 측 relay). layer 지정 시 그 레이어 맨 앞으로 이동,
-   * 아니면 op 로 현재 레이어 내 정렬. 변경된 토큰(0~2개 · forward/backward 는 교환쌍) 반환 → relay 가 각각 token:state 송출.
+   * op='moveTo' 면 targetId 옆자리로 한 번에, forward/backward 는 한 칸씩,
+   * front/back 은 무대 같은 쪽의 끝까지 간다(그리는 방식이 같은 밴드 안에서 — 원형 두상은 token 밴드에 머문다).
+   * 변경된 토큰을 그것이 속한 컬렉션(mapId)과 함께 반환 → relay 가 각각 token:state 송출.
    */
   reorderToken(
     roomId: string,
     mapId: string,
     id: string,
-    req: { op?: TokenZOp; layer?: TokenLayer }
-  ): Token[] {
+    req: { op?: TokenZOp; layer?: TokenLayer; sceneMapId?: string; targetId?: string; side?: 'front' | 'back' }
+  ): { mapId: string; token: Token }[] {
     const room = this.rooms.get(roomId)
     const coll = room ? this.tokenColl(room, mapId) : undefined
     const t = coll?.get(id)
     if (!room || !coll || !t) return []
-    const changed: Token[] = []
+    // 겹침은 통합 레이어와 이 맵의 레이어가 한 줄로 섞여 그려진다 — 순서도 그 한 줄 위에서 매긴다.
+    // 부르는 쪽이 보고 있는 맵을 알려 주지 않으면(구버전 클라) 예전처럼 제 컬렉션 안에서만 다룬다.
+    const sceneMapId = req.sceneMapId ?? (mapId === GLOBAL_MAP_ID ? undefined : mapId)
+    const stack = sceneMapId
+      ? this.sceneStack(room, sceneMapId)
+      : [...coll.values()]
+          .sort(
+            (a, b) =>
+              LAYER_ORDER[a.layer ?? 'token'] - LAYER_ORDER[b.layer ?? 'token'] || (a.z ?? 0) - (b.z ?? 0)
+          )
+          .map((token) => ({ token, mapId }))
+    const changed: { mapId: string; token: Token }[] = []
     const curLayer = t.layer ?? 'token'
+    /** 이 토큰이 속한 컬렉션 — 한 줄에 섞여 있어도 방송은 제 컬렉션으로 나가야 한다. */
+    const collOf = (x: Token): string => stack.find((r) => r.token === x)?.mapId ?? mapId
+    /** 무대 앞(bg·token·standing)과 무대 뒤(behind)는 서로 순서를 섞지 않는다 — 무대 이미지가 사이에 있다. */
+    const sameSide = (a: TokenLayer, b: TokenLayer): boolean => (a === 'behind') === (b === 'behind')
+    /**
+     * 겹침을 옮길 때 넘나들 수 있는 밴드인지. 밴드는 순서만 정하는 것이 아니라 **그리는 방식**도 정한다 —
+     * token 밴드만 원형 두상(이름·수치 바)으로 그리고 나머지는 직사각 이미지다. 그래서 순서를 바꾸려다
+     * 이 경계를 넘으면 두상이 통째로 다른 그림이 된다. 밴드를 바꾸는 것은 '무대 앞뒤 보내기'처럼
+     * 사용자가 그렇게 하겠다고 고른 길(req.layer)에만 맡긴다.
+     */
+    const sameKind = (a: TokenLayer, b: TokenLayer): boolean => (a === 'token') === (b === 'token')
+    /** 옮긴 토큰이 통합 레이어면 맵 토큰을, 맵 토큰이면 통합 레이어를 고정한다(다른 맵을 흔들지 않게). */
+    const pinned = mapId === GLOBAL_MAP_ID ? sceneMapId : GLOBAL_MAP_ID
+    /**
+     * 끌어 놓은 자리에 맞는 밴드. 원형 두상은 제 밴드에 머물고, 이미지는 무대 뒤(behind)와
+     * 캐릭터보다 뒤(bg)·앞(standing) 중 놓인 자리에 맞는 것을 고른다. 캐릭터 토큰이 하나도 없으면
+     * 앞뒤를 가를 기준이 없으므로 놓은 대상의 밴드를 그대로 따른다.
+     */
+    const bandFor = (line: Token[], idx: number, target: Token): TokenLayer => {
+      if (curLayer === 'token') return 'token'
+      const tl = target.layer ?? 'token'
+      if (tl === 'behind') return 'behind'
+      const lastChar = line.reduce((acc, x, i) => (x !== t && (x.layer ?? 'token') === 'token' ? i : acc), -1)
+      if (lastChar < 0) return sameKind(tl, curLayer) ? tl : curLayer
+      return idx > lastChar ? 'standing' : 'bg'
+    }
     if (req.layer && coerceLayer(req.layer) !== curLayer) {
       const layer = coerceLayer(req.layer)
       // topZ 를 레이어 변경 전에 계산(아직 옛 레이어 → t 자신이 새 레이어 max 에 포함되지 않음).
       const z = topZ(coll.values(), layer) + 1 // 새 레이어 맨 앞으로
       t.layer = layer
       t.z = z
-      changed.push(t)
-    } else if (req.op) {
-      const sibs = [...coll.values()].filter((x) => (x.layer ?? 'token') === curLayer)
-      const myz = t.z ?? 0
-      if (req.op === 'front') {
-        const mx = Math.max(...sibs.map((s) => s.z ?? 0))
-        if (myz < mx) {
-          t.z = mx + 1
-          changed.push(t)
+      changed.push({ mapId, token: t })
+    } else if (req.op === 'moveTo') {
+      // 목록에서 끌어 놓은 자리로 한 번에. 예전에는 '한 칸씩'을 그 수만큼 연달아 보내야 했는데,
+      // 같은 z 가 섞여 있으면 한 칸이 여러 칸을 뛰어 엉뚱한 데 내려앉았다.
+      const target = req.targetId ? stack.find((r) => r.token.id === req.targetId)?.token : undefined
+      if (target && target !== t) {
+        const line = stack.map((r) => r.token)
+        const from = line.indexOf(t)
+        let at = line.indexOf(target)
+        if (from >= 0 && at >= 0) {
+          // 줄은 뒤→앞 순이다. 'front'=대상보다 앞(뒤에서 셀 때 한 칸 뒤에), 'back'=대상보다 뒤.
+          if (req.side === 'front') at += 1
+          line.splice(from, 1)
+          if (from < at) at -= 1
+          line.splice(at, 0, t)
+          // 놓인 자리에 맞는 밴드를 고른다. 다만 그리는 방식이 다른 밴드(token ↔ 이미지)로는 넘어가지
+          // 않는다 — 겹침만 바꾸려다 원형 두상이 직사각 이미지가 되어서는 안 된다.
+          const band = bandFor(line, line.indexOf(t), target)
+          if (band !== curLayer) {
+            t.layer = band
+            changed.push({ mapId: collOf(t), token: t })
+          }
+          for (const row of this.renumber(line.map((token) => ({ token, mapId: collOf(token) })), pinned))
+            if (!changed.some((c) => c.token === row.token)) changed.push(row)
         }
-      } else if (req.op === 'back') {
-        const mn = Math.min(...sibs.map((s) => s.z ?? 0))
-        if (myz > mn) {
-          t.z = mn - 1
-          changed.push(t)
+      }
+    } else if (req.op) {
+      const sibs = stack.map((r) => r.token).filter((x) => (x.layer ?? 'token') === curLayer)
+      /** 한 칸 넘어갈 수 있는 다음 밴드 — 그리는 방식이 같은 것만 고른다(건너뛰면 두상이 이미지가 된다). */
+      const nextBand = (dir: 1 | -1): TokenLayer | undefined => {
+        for (let i = REORDER_BANDS.indexOf(curLayer) + dir; i >= 0 && i < REORDER_BANDS.length; i += dir) {
+          const b = REORDER_BANDS[i]
+          if (sameKind(b, curLayer)) return b
+        }
+        return undefined
+      }
+      const myz = t.z ?? 0
+      if (req.op === 'front' || req.op === 'back') {
+        // 맨 앞·맨 뒤는 무대 같은 쪽의 끝까지 간다. 예전에는 제 밴드 안에서만 움직여, 눌러도 위에 있는
+        // 밴드에 가려 '아무 일도 안 일어난' 것처럼 보였다. 다만 그리는 방식은 지킨다 — 원형 두상은
+        // token 밴드에 머물고, 이미지는 캐릭터보다 앞(standing)·뒤(bg)·무대 뒤(behind) 안에서만 옮긴다.
+        // 끝으로 보내는 것뿐이라 번호를 다시 매기지 않는다(한 번 누를 때마다 줄 전체를 다시 방송하게 된다).
+        const side = stack.map((r) => r.token).filter((x) => x !== t && sameSide(x.layer ?? 'token', curLayer))
+        const band: TokenLayer =
+          curLayer === 'token'
+            ? 'token'
+            : curLayer === 'behind'
+              ? 'behind'
+              : req.op === 'front' && side.some((x) => !sameKind(x.layer ?? 'token', curLayer) || (x.layer ?? 'token') === 'standing')
+                ? 'standing'
+                : 'bg'
+        const peers = side.filter((x) => (x.layer ?? 'token') === band).map((x) => x.z ?? 0)
+        const edge = peers.length ? (req.op === 'front' ? Math.max(...peers) : Math.min(...peers)) : 0
+        const z = req.op === 'front' ? edge + 1 : edge - 1
+        if (curLayer !== band || t.z !== z) {
+          t.layer = band
+          t.z = z
+          changed.push({ mapId: collOf(t), token: t })
         }
       } else if (req.op === 'forward') {
         // 바로 위(다음으로 큰 z) 형제와 z 교환.
@@ -2938,16 +4190,15 @@ export class RoomStore {
           const nz = next.z ?? 0
           next.z = myz
           t.z = nz
-          changed.push(t, next)
+          changed.push({ mapId: collOf(t), token: t }, { mapId: collOf(next), token: next })
         } else {
-          // 밴드 맨 앞 → 한 밴드 앞으로 승격(그 밴드 맨 뒤에 붙임). 클라 applyReorder 미러.
-          const bi = REORDER_BANDS.indexOf(curLayer)
-          if (bi > 0) {
-            const up = REORDER_BANDS[bi - 1]
-            const ups = [...coll.values()].filter((x) => (x.layer ?? 'token') === up)
+          // 밴드 맨 앞 → 그리는 방식이 같은 다음 밴드로 승격(그 밴드 맨 뒤에 붙임). 클라 planReorder 미러.
+          const up = nextBand(-1)
+          if (up) {
+            const ups = stack.map((r) => r.token).filter((x) => (x.layer ?? 'token') === up)
             t.layer = up
             t.z = (ups.length ? Math.min(...ups.map((s) => s.z ?? 0)) : 0) - 1
-            changed.push(t)
+            changed.push({ mapId: collOf(t), token: t })
           }
         }
       } else if (req.op === 'backward') {
@@ -2957,16 +4208,15 @@ export class RoomStore {
           const pz = prev.z ?? 0
           prev.z = myz
           t.z = pz
-          changed.push(t, prev)
+          changed.push({ mapId: collOf(t), token: t }, { mapId: collOf(prev), token: prev })
         } else {
-          // 밴드 맨 뒤 → 한 밴드 뒤로 강등(그 밴드 맨 앞에 붙임). bg→behind 면 무대 뒤로.
-          const bi = REORDER_BANDS.indexOf(curLayer)
-          if (bi >= 0 && bi < REORDER_BANDS.length - 1) {
-            const down = REORDER_BANDS[bi + 1]
-            const downs = [...coll.values()].filter((x) => (x.layer ?? 'token') === down)
+          // 밴드 맨 뒤 → 그리는 방식이 같은 다음 밴드로 강등(그 밴드 맨 앞에 붙임). bg→behind 면 무대 뒤로.
+          const down = nextBand(1)
+          if (down) {
+            const downs = stack.map((r) => r.token).filter((x) => (x.layer ?? 'token') === down)
             t.layer = down
             t.z = (downs.length ? Math.max(...downs.map((s) => s.z ?? 0)) : 0) + 1
-            changed.push(t)
+            changed.push({ mapId: collOf(t), token: t })
           }
         }
       }
@@ -3115,7 +4365,7 @@ export class RoomStore {
   listForAccount(accountId: string): RoomSummary[] {
     const out: RoomSummary[] = []
     for (const room of this.rooms.values()) {
-      if (room.ownerId === accountId || room.members.has(accountId))
+      if (isGm(room, accountId) || room.members.has(accountId))
         out.push(this.summaryFor(room, accountId))
     }
     return out.sort((a, b) => b.updatedAt - a.updatedAt)
@@ -3136,6 +4386,55 @@ export class RoomStore {
     room.lastActivityAt = Date.now()
     void this.flush(room)
     return this.summaryFor(room, accountId)
+  }
+
+  /**
+   * 공동 GM 지정·해제 — 소유자만. 대상은 이 방에 한 번이라도 들어온 계정이어야 한다.
+   *
+   * 지금 방에 있는 사람이면 참가자 레코드의 role 까지 그 자리에서 맞춘다. 방 안의 권한 검사는
+   * 전부 role 을 보므로, 여기서 안 맞추면 다음에 다시 들어올 때까지 권한이 따라오지 않는다.
+   * 소유자는 대상이 될 수 없다 — 이미 GM 이고, 지정을 해제한다는 말이 성립하지 않는다.
+   */
+  setGm(roomId: string, ownerId: string, targetId: string, on: boolean): { error: string } | { ok: true } {
+    const room = this.rooms.get(roomId)
+    if (!room) return { error: '세션을 찾을 수 없습니다.' }
+    if (room.ownerId !== ownerId) return { error: '방을 만든 사람만 GM 을 지정할 수 있습니다.' }
+    if (!targetId || targetId === room.ownerId) return { error: '방을 만든 사람은 언제나 GM 입니다.' }
+    if (on && !room.members.has(targetId) && !room.participants.has(targetId))
+      return { error: '이 세션에 들어온 적 없는 사람입니다.' }
+    if (on) room.gmIds.add(targetId)
+    else room.gmIds.delete(targetId)
+    const p = room.participants.get(targetId)
+    if (p) p.role = on ? 'GM' : 'PL'
+    room.lastActivityAt = Date.now()
+    void this.flush(room)
+    return { ok: true }
+  }
+
+  /**
+   * 방 양도 — 소유자만. 대상이 새 소유자가 되고, 넘긴 사람은 공동 GM 으로 남는다.
+   *
+   * 넘긴 사람을 PL 로 떨어뜨리지 않는 이유는 단순하다. 양도는 보통 '오늘은 네가 진행해'라는 뜻이지
+   * '나는 이제 손을 뗀다'가 아니고, 잘못 눌렀을 때 되돌릴 사람이 방 안에 아무도 남지 않으면 곤란하다.
+   * 되돌리려면 새 소유자가 다시 양도하면 된다.
+   */
+  transferOwner(roomId: string, ownerId: string, targetId: string): { error: string } | { ok: true } {
+    const room = this.rooms.get(roomId)
+    if (!room) return { error: '세션을 찾을 수 없습니다.' }
+    if (room.ownerId !== ownerId) return { error: '방을 만든 사람만 양도할 수 있습니다.' }
+    if (!targetId || targetId === ownerId) return { error: '자기 자신에게는 넘길 수 없습니다.' }
+    if (!room.members.has(targetId) && !room.participants.has(targetId))
+      return { error: '이 세션에 들어온 적 없는 사람입니다.' }
+    room.ownerId = targetId
+    room.members.add(targetId)
+    room.members.add(ownerId) // 넘긴 사람이 '내 세션 목록'에서 사라지지 않게
+    room.gmIds.delete(targetId) // 새 소유자는 소유자라서 GM 이다 — 공동 GM 명단에 겹쳐 두지 않는다
+    room.gmIds.add(ownerId)
+    const np = room.participants.get(targetId)
+    if (np) np.role = 'GM'
+    room.lastActivityAt = Date.now()
+    void this.flush(room)
+    return { ok: true }
   }
 
   /** 세션 삭제 — 소유자만. 메모리·파일 제거. 알릴 대상(멤버·현재 참가자) 반환. */
@@ -3207,10 +4506,13 @@ export class RoomStore {
       code,
       title: src.title + ' (사본)',
       ownerId: accountId,
+      gmIds: new Set(), // 사본은 만든 사람 혼자로 시작 — 원본의 공동 GM 을 자동으로 물려주지 않는다
       members: new Set([accountId]),
       cardImage: src.cardImage,
       participants: new Map(),
       characters: new Map(),
+      // 토큰은 그대로 복사되므로 보관대도 함께 옮긴다 — 아니면 복사한 방에서 토큰이 이름을 잃는다.
+      charPool: new Map(src.charPool),
       handouts,
       maps,
       activeMapId: maps.has(src.activeMapId) ? src.activeMapId : (maps.keys().next().value as string),
@@ -3225,8 +4527,12 @@ export class RoomStore {
             summary: [...src.madnessTables.summary]
           }
         : undefined,
+      // 잠금은 복제본에 옮기지 않는다 — 복사한 방은 새로 준비하는 방이라 문을 열어 둔 채 시작한다.
       luckEnabled: src.luckEnabled, // 행운 깎기 사용 여부 복제
       vnOverlay: src.vnOverlay, // VN 오버레이 표시 여부 복제
+      gmSeeWhispers: src.gmSeeWhispers, // GM 귓속말 열람 여부 복제(대화는 복제하지 않으므로 각인은 따라가지 않는다)
+      // 덱은 정의만 옮기고 판은 처음부터 — 복사한 방은 새로 시작하는 방이다.
+      decks: src.decks?.map((d) => ({ ...d, cards: d.cards.map((c) => ({ ...c })), draw: shufflePile(deckPile(d.cards)), discard: [] })),
       bgm: src.bgm.map((t) => ({ ...t })),
       combat: null,
       channels: new Map(),
@@ -3241,13 +4547,15 @@ export class RoomStore {
     return this.summaryFor(room, accountId)
   }
 
-  /** 세션 채팅 로그 전체 삭제 — 소유자만. 성공 시 true. */
+  /** 세션 채팅 로그 전체 삭제 — 소유자만. 보관해 둔 지난 대화까지 함께 지운다. 성공 시 true. */
   clearChat(roomId: string, accountId: string): boolean {
     const room = this.rooms.get(roomId)
     if (!room || room.ownerId !== accountId) return false
     room.messages = []
     room.lastActivityAt = Date.now()
     this.journal(roomId, { op: 'clear' })
+    // '비우기'는 되돌릴 수 없는 손짓이다 — 보관소만 남겨 두면 '더 불러오기'로 지운 말이 도로 올라온다.
+    this.removeArchive(roomId)
     void this.flush(room)
     return true
   }
@@ -3270,10 +4578,14 @@ export class RoomStore {
       code: room.code,
       title: room.title,
       ownerId: room.ownerId,
+      gmIds: [...room.gmIds],
       cardImage: room.cardImage,
       participants: this.participants(room),
       characters: [...room.characters.values()],
+      // 로스터에 없는(지금 아무도 장착하지 않은) 캐릭터도 함께 — 그 캐릭터의 토큰이 이름·수치를 그린다.
+      charPool: [...room.charPool.values()],
       messages,
+      archived: this.hasArchive(room.id), // 이보다 앞선 대화가 보관소에 남아 있는가
       avatarPool, // 채팅 두상 풀 — 클라가 avatarRef 복원에 사용
       handouts: viewer ? this.handoutsFor(room, viewer) : [...room.handouts.values()],
       // 공개범위에 따라 뷰어별 표현(앞면/뒷면/미표시)으로 변환한다(클라 은닉 신뢰 X · 와이어 노출 차단).
@@ -3291,8 +4603,10 @@ export class RoomStore {
       cutInImages: room.cutInImages,
       dimColor: room.dimColor,
       madnessTables: room.madnessTables, // GM 커스텀 광기표
+      locked: room.locked, // 입실 잠금(공사중)
       luckEnabled: room.luckEnabled, // 행운 깎기 사용 여부
       vnOverlay: room.vnOverlay, // VN 오버레이 표시 여부
+      gmSeeWhispers: room.gmSeeWhispers, // GM 귓속말 열람 여부
       bgm: room.bgm,
       combat: room.combat,
       channels: this.channelsFor(room, viewer),
@@ -3309,6 +4623,7 @@ export class RoomStore {
         : {},
       saveSlots: this.slotMeta(room), // 저장 슬롯 메타(목록 표시용)
       visualCards: room.visualCards ?? [], // 비주얼 카드 목록
+      decks: this.decksFor(room.id, viewer), // 덱 공개본(남은 더미의 순서는 빠진다)
       // 통합 레이어 토큰 — 맵을 넘어 유지. 공개범위/양면/상태비공개 필터를 맵 토큰과 동일 적용.
       globalTokens: room.globalTokens
         ? viewer
@@ -3387,7 +4702,8 @@ export class RoomStore {
       if (room.ownerId !== accountId) continue
       try {
         const json = JSON.stringify(roomToFile(room))
-        const b = Buffer.byteLength(json, 'utf8')
+        // 보관소도 이 방이 쓰는 자리다 — 빼고 세면 관리 화면의 용량이 실제보다 작게 보인다.
+        const b = Buffer.byteLength(json, 'utf8') + this.archiveBytes(room.id)
         bytes += b
         scanAssetRefs(json, refs)
         collectAvatarHashes(room, refs)
@@ -3405,6 +4721,9 @@ export class RoomStore {
    */
   collectAssetRefs(into: Set<string>): void {
     for (const room of this.rooms.values()) {
+      // 보관소로 옮겨 둔 대화가 붙잡고 있는 그림 — 메모리의 room.messages 에는 이미 없다.
+      // 이걸 빼먹으면 '아무도 안 쓰는 파일'로 판정돼, 대화는 되읽히는데 그림만 빈칸이 된다.
+      if (this.persist) for (const h of this.archiveRefSet(room.id)) into.add(h)
       collectAvatarHashes(room, into)
       try {
         scanAssetRefs(JSON.stringify(roomToFile(room)), into)
@@ -3420,8 +4739,11 @@ export class RoomStore {
           () => [...room.maps.values()].map(toWireMap),
           () => [...room.handouts.values()],
           () => [...room.channels.values()],
-          () => room.characters ?? [],
-          () => [room.appearance, room.cutInImage, room.cutInImages, room.bgm, room.saveSlots, room.visualCards]
+          // Map 을 그대로 넘기면 '{}' 로 직렬화돼 아무것도 못 훑는다 — 값 배열로 펴서 넘긴다.
+          () => [...room.characters.values()],
+          () => [...room.charPool.values()],
+          // ⚠ 덱 카드 그림을 여기 빠뜨리면 주기 자산 회수가 '쓰는 데 없는 파일'로 보고 지운다 — 덱은 멀쩡한데 그림만 사라진다.
+          () => [room.appearance, room.cutInImage, room.cutInImages, room.bgm, room.saveSlots, room.visualCards, room.decks]
         ]) {
           try {
             scanAssetRefs(JSON.stringify(part()), into)
@@ -3448,9 +4770,27 @@ export class RoomStore {
       // 방 소유자는 그 방의 GM 이다(지금 접속 중이 아니어도 재입장하면 GM).
       const viewer = { playerId: accountId, role: room.participants.get(accountId)?.role ?? ('GM' as const) }
       const visible = room.messages.filter((m) =>
-        canSeeMessage(m, viewer, (gid) => this.canAccessChannel(room.id, gid, accountId))
+        canSeeMessage(
+          m,
+          viewer,
+          // 방장은 지금 접속 중이 아니어도 GM 이다 — 참가자 목록으로만 판정하면 자기 방 그룹 로그가 내보내기에서 빠진다.
+          // 지운 채널은 통과시키지 않는다(보관분을 거르는 archivedAll 과 같은 규칙이어야 두 길이 어긋나지 않는다).
+          (gid) =>
+            room.channels.has(gid) && (viewer.role === 'GM' || this.canAccessChannel(room.id, gid, accountId))
+        )
       )
-      out.push(roomToFile({ ...room, messages: visible }))
+      // 보관소로 옮겨 둔 지난 대화까지 함께 싣는다 — 계정을 옮기면서 세션 앞부분을 잃지 않게.
+      const archived = this.archivedAll(room.id, viewer)
+      if (archived.truncated)
+        console.warn(`[rooms] ${room.id}(${room.title}) 보관 대화가 너무 많아 내보내기에 최근 몫만 실었다.`)
+      // 상한 경계에서 서버가 갑자기 죽은 직후에는 같은 말이 보관소와 라이브 양쪽에 남아 있을 수 있다 —
+      // 파일에는 한 번만 싣는다(보관 쪽을 남겨야 시간순이 그대로다).
+      const packed = new Set(archived.messages.map((m) => m.id))
+      const live = packed.size ? visible.filter((m) => !packed.has(m.id)) : visible
+      // 남은 더미의 순서는 파일로도 내보내지 않는다 — 디스크 저장과 달리 이 파일은 사람 손에 들어간다.
+      // 되살릴 때는 순서가 없으므로 새로 섞인다(coerceDecks).
+      const decks = room.decks?.map(({ draw: _draw, ...rest }) => rest)
+      out.push(roomToFile({ ...room, decks, messages: [...archived.messages, ...live] } as Room))
     }
     return out
   }
@@ -3467,12 +4807,23 @@ export class RoomStore {
       if (imported >= 200) break // 안전 상한
       const room = roomFromFile(f)
       if (!room) continue
+      // 예전 판에서 만든 파일에는 같은 말이 두 번 실려 있을 수 있다 — 여기서 한 번만 남긴다.
+      if (room.messages.length) {
+        const seen = new Set<string>()
+        room.messages = room.messages.filter((m) => {
+          if (!m.id || seen.has(m.id)) return false
+          seen.add(m.id)
+          return true
+        })
+      }
       const id = randomUUID()
       let code = genCode()
       while (this.codeToId.has(code)) code = genCode()
       room.id = id
       room.code = code
       room.ownerId = accountId
+      // 공동 GM 은 옛 서버의 계정 id 라 이 서버에서는 남이거나 없는 사람이다 — 비우고 시작한다.
+      room.gmIds = new Set()
       room.members = new Set([accountId])
       room.participants = new Map<string, Participant>([
         [
@@ -3484,6 +4835,9 @@ export class RoomStore {
       room.lastActivityAt = Date.now()
       this.rooms.set(id, room)
       this.codeToId.set(code, id)
+      // 옛 서버에서 보관소에 있던 몫까지 함께 실려 오므로 방이 상한을 넘길 수 있다.
+      // 여기서 곧바로 이 서버의 보관소로 옮겨 둔다 — 안 그러면 입장 스냅샷이 통째로 그만큼 커진다.
+      this.evictOldest(room, MAX_HISTORY)
       void this.flush(room) // 즉시 영속
       imported++
     }
