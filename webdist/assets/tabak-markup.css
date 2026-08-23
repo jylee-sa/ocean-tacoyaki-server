@@ -2,6 +2,10 @@
   font-style: italic;
 }
 
+.dcard-tkt .tkt-script {
+  display: none;
+}
+
 .msg-script:has(.mk-box) {
   background: none;
   padding: 0;
