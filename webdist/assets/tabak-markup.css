@@ -24,6 +24,11 @@
   padding-left: 41px;
 }
 
+.msg.msg-cont > .pic,
+.msg.msg-cont > .body > .who {
+  display: none;
+}
+
 html[data-mobile] .msg.msg-cont {
   padding-left: 33px;
 }
