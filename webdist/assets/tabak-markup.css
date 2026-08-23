@@ -1,0 +1,233 @@
+.msg-script {
+  font-style: italic;
+}
+
+.msg-script .mk-handout {
+  font-style: normal;
+}
+
+.msg-script:has(.mk-box) {
+  background: none;
+  padding: 0;
+}
+
+.msg-script .mk-box {
+  margin: 0 6px;
+  padding: 5px 12px;
+  border: 0;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--tx) 6%, transparent);
+}
+
+.msg-script:has(.mk-css[style*="background-color"]),
+.msg-script:has(.tabak-style[style*="background-color"]) {
+  background: none;
+  padding: 0;
+}
+
+.msg-script > .mk-css[style*="background-color"],
+.msg-script > .tabak-style[style*="background-color"] {
+  display: block !important;
+  padding: 5px 12px;
+  border-radius: 2px;
+}
+
+.mk-check {
+  display: inline-block;
+  min-width: 132px;
+  margin: 8px 0;
+  padding: 5px 40px;
+  border: 1px solid #fff;
+  border-radius: 20px;
+  background: linear-gradient(90deg, #828282 0%, #000 100%);
+  box-shadow: 0 0 2px 1px #8f8f8f;
+  color: #fff;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 600;
+  letter-spacing: -1px;
+  line-height: 1.35;
+  text-align: center;
+  text-shadow: 0 0 5px #000;
+  white-space: nowrap;
+}
+
+.mk-handout {
+  overflow: hidden;
+  margin: 3px 0;
+  border: 1px solid var(--line2);
+  border-radius: 8px;
+  background: var(--bg2);
+  text-align: left;
+}
+
+.mk-handout-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line2);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 1.5px;
+}
+
+.mk-handout-mark {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.mk-handout-content {
+  padding: 12px;
+}
+
+.mk-handout-title {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--tx);
+  font-size: 15px;
+}
+
+.mk-handout-body {
+  color: var(--tx);
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+.msg.msg-cont {
+  margin-top: -7px;
+  padding-left: 41px;
+}
+
+html[data-mobile] .msg.msg-cont {
+  padding-left: 33px;
+}
+
+.gm-tool-root {
+  position: absolute;
+  right: 100%;
+  bottom: 24px;
+  z-index: 40;
+  width: 36px;
+  height: 36px;
+}
+
+.gm-tool-panel {
+  position: absolute;
+  right: 0;
+  bottom: 44px;
+  width: 104px;
+  padding: 7px;
+  border: 1px solid var(--line);
+  border-radius: 10px 0 0 10px;
+  background: var(--bg2);
+  box-shadow: -8px -8px 22px #0004;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(10px);
+  transition: opacity .16s ease, transform .18s ease;
+}
+
+.gm-tool-root.is-open .gm-tool-panel {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.gm-tool-tab {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-right: 0;
+  border-radius: 9px 0 0 9px;
+  background: var(--bg3);
+  color: var(--tx2);
+  cursor: pointer;
+}
+
+.gm-tool-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 7px;
+  color: var(--tx);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.gm-tool-close {
+  border: 0;
+  background: transparent;
+  color: var(--tx3);
+  cursor: pointer;
+}
+
+.gm-tool-macro {
+  width: 100%;
+  padding: 8px 9px;
+  border: 1px solid var(--line2);
+  border-radius: 7px;
+  background: var(--bg3);
+  color: var(--tx);
+  font: 700 12px/1.2 inherit;
+  cursor: pointer;
+}
+
+.gm-check-veil {
+  position: fixed;
+  inset: 0;
+  z-index: 5000;
+  display: grid;
+  place-items: center;
+  background: #0007;
+}
+
+.gm-check-modal {
+  width: min(320px, calc(100vw - 32px));
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg2);
+  box-shadow: 0 18px 60px #0009;
+}
+
+.gm-check-modal h3,
+.gm-check-modal p {
+  margin: 0;
+}
+
+.gm-check-modal p {
+  margin-top: 4px;
+  color: var(--tx3);
+  font-size: 11px;
+}
+
+.gm-check-modal input {
+  box-sizing: border-box;
+  width: 100%;
+  height: 34px;
+  margin-top: 9px;
+  padding: 7px 9px;
+  border: 1px solid var(--line2);
+  border-radius: 7px;
+  background: var(--bg3);
+  color: var(--tx);
+}
+
+.gm-check-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+  margin-top: 9px;
+}
+
+html[data-mobile] .gm-tool-root {
+  display: none;
+}

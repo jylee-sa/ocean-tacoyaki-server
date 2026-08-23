@@ -3903,10 +3903,18 @@ export function createRelay(opts?: {
       if (socket.data.account?.role === 'guest') raw = raw.replace(/\[img=[^\]]*\]/gi, '')
       if (!raw.trim()) return
 
+      const emasMatch = sender.role === 'GM' ? /^\s*\/emas(?:\s+|$)/i.exec(raw) : null
+      if (emasMatch) {
+        const text = raw.slice(emasMatch[0].length).trim()
+        if (!text) return
+        raw = `[css=font-style:italic;font-weight:700;letter-spacing:0px;display:block]${text}[/css]`
+      }
+      const isGmMarkup = sender.role === 'GM' && /^\s*\[(?:check|handout)(?:=[^\]]*)?\]/i.test(raw)
+
       // 서버 권위 다이스: 명령이면 서버가 굴리고, 아니면 평문 메시지.
       // author/color/playerId 는 서버가 참가자 정보로 스탬프 (클라 전송값 무시 → 위조 방지).
       // script(/desc)는 꾸미기 본문이므로 다이스로 해석하지 않음.
-      const isScript = req.script === true
+      const isScript = req.script === true || isGmMarkup || Boolean(emasMatch)
       const dice = isScript ? null : parseCommand(raw)
       const id = randomUUID()
       const time = Date.now()
