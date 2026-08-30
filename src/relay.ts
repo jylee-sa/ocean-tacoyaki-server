@@ -115,6 +115,13 @@ function escapeNativeMarkupText(value: string): string {
   return value.replaceAll('[', '［').replaceAll(']', '］')
 }
 
+function convertMarkdownEmphasis(value: string): string {
+  return value
+    .replace(/\*\*\*([^*\n](?:[^\n]*?[^*\n])?)\*\*\*/g, '[b][i]$1[/i][/b]')
+    .replace(/\*\*([^*\n](?:[^\n]*?[^*\n])?)\*\*/g, '[b]$1[/b]')
+    .replace(/(?<![\d*])\*([^*\n](?:[^\n]*?[^*\n])?)\*(?![\d*])/g, '[i]$1[/i]')
+}
+
 function nativeCheckMarkup(content: string): string {
   return `[css=${CHECK_STYLE}][css=font-style:normal]${escapeNativeMarkupText(content.trim())}[/css][/css]`
 }
@@ -3942,6 +3949,7 @@ export function createRelay(opts?: {
       // 색·크기·기울임·굵기 등 다른 꾸미기는 그대로 허용. 멤버·관리자·GM 은 이미지 허용.
       if (socket.data.account?.role === 'guest') raw = raw.replace(/\[img=[^\]]*\]/gi, '')
       if (!raw.trim()) return
+      raw = convertMarkdownEmphasis(raw)
 
       const emasMatch = sender.role === 'GM' ? /^\s*\/emas(?:\s+|$)/i.exec(raw) : null
       if (emasMatch) {
