@@ -1,7 +1,6 @@
 (() => {
   const ROOT_ID = 'gm-tool-root'
   let savedNames = { kpc: '', pc: '' }
-  let activeLayerResize = null
   const layerImageSizes = new Map()
 
   function isGm() {
@@ -68,46 +67,20 @@
     return new DOMRect(bounds.left + (bounds.width - width) / 2, bounds.top + (bounds.height - height) / 2, width, height)
   }
 
-  function resizeHandle() {
-    let handle = document.getElementById('tabak-layer-resize-handle')
-    if (handle) return handle
-    handle = document.createElement('button')
-    handle.id = 'tabak-layer-resize-handle'
-    handle.type = 'button'
-    handle.title = '드래그해 레이어 크기 조절'
-    handle.textContent = '◢'
-    handle.addEventListener('pointerdown', startLayerResize)
-    document.body.append(handle)
-    return handle
-  }
-
-  function updateResizeHandle() {
-    const handle = resizeHandle()
-    const active = activeLayerResize
-    if (!active?.layer.isConnected || !active.input.isConnected) {
-      activeLayerResize = null
-      handle.hidden = true
-      return
-    }
-    const bounds = visibleLayerBounds(active.layer)
+  function positionResizeHandle(handle, layer) {
+    const bounds = visibleLayerBounds(layer)
     handle.style.left = `${bounds.right - 12}px`
     handle.style.top = `${bounds.bottom - 12}px`
-    handle.hidden = false
-  }
-
-  function activateLayerResize(input) {
-    const layer = layerForInput(input)
-    if (!layer) return
-    activeLayerResize = { input, layer }
-    updateResizeHandle()
   }
 
   function startLayerResize(event) {
-    const active = activeLayerResize
-    if (!active || event.button !== 0) return
+    const handle = event.currentTarget
+    const input = handle?._tabakLayerInput
+    const layer = handle?._tabakLayerElement
+    if (!(input instanceof HTMLInputElement) || !(layer instanceof HTMLElement) || event.button !== 0) return
     event.preventDefault()
-    const bounds = visibleLayerBounds(active.layer)
-    const startScale = Number(active.input.value) || 100
+    const bounds = visibleLayerBounds(layer)
+    const startScale = Number(input.value) || 100
     const startWidth = Math.max(1, bounds.width)
     const startHeight = Math.max(1, bounds.height)
     const startX = event.clientX
@@ -117,15 +90,15 @@
       const height = Math.max(1, startHeight + moveEvent.clientY - startY)
       const ratio = Math.hypot(width, height) / Math.hypot(startWidth, startHeight)
       const nextScale = Math.max(20, Math.min(300, Math.round(startScale * ratio / 5) * 5))
-      active.input.value = String(nextScale)
-      active.input.dispatchEvent(new Event('input', { bubbles: true }))
-      requestAnimationFrame(updateResizeHandle)
+      input.value = String(nextScale)
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      requestAnimationFrame(() => positionResizeHandle(handle, layer))
     }
     const finish = () => {
       window.removeEventListener('pointermove', update)
       window.removeEventListener('pointerup', finish)
       window.removeEventListener('pointercancel', finish)
-      active.input.dispatchEvent(new Event('pointerup', { bubbles: true }))
+      input.dispatchEvent(new Event('pointerup', { bubbles: true }))
     }
     window.addEventListener('pointermove', update)
     window.addEventListener('pointerup', finish)
@@ -134,19 +107,32 @@
 
   function syncLayerResize() {
     const inputs = isGm() ? [...document.querySelectorAll('input[type="range"][title^="크기 "]')] : []
-    inputs.forEach((input) => {
-      if (!(input instanceof HTMLInputElement) || input.dataset.tabakHandleBound) return
-      const button = document.createElement('button')
-      button.type = 'button'
-      button.className = 'tabak-layer-handle-toggle'
-      button.title = '화면에 모서리 크기 조절 핸들 표시'
-      button.textContent = '◢'
-      button.addEventListener('click', () => activateLayerResize(input))
-      input.after(button)
-      input.dataset.tabakHandleBound = '1'
+    const activeHandles = new Set()
+    inputs.forEach((input, index) => {
+      if (!(input instanceof HTMLInputElement)) return
+      const layer = layerForInput(input)
+      if (!layer) return
+      const id = input.dataset.tabakHandleId || `tabak-layer-resize-handle-${Date.now()}-${index}`
+      input.dataset.tabakHandleId = id
+      let handle = document.getElementById(id)
+      if (!(handle instanceof HTMLButtonElement)) {
+        handle = document.createElement('button')
+        handle.id = id
+        handle.type = 'button'
+        handle.className = 'tabak-layer-resize-handle'
+        handle.title = '드래그해 레이어 크기 조절'
+        handle.textContent = '◢'
+        handle.addEventListener('pointerdown', startLayerResize)
+        document.body.append(handle)
+      }
+      handle._tabakLayerInput = input
+      handle._tabakLayerElement = layer
+      positionResizeHandle(handle, layer)
+      activeHandles.add(handle)
     })
-    if (!inputs.length) activeLayerResize = null
-    updateResizeHandle()
+    document.querySelectorAll('.tabak-layer-resize-handle').forEach((handle) => {
+      if (!activeHandles.has(handle)) handle.remove()
+    })
   }
 
   function openCheckModal() {
