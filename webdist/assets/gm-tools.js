@@ -1,7 +1,5 @@
 (() => {
   const ROOT_ID = 'gm-tool-root'
-  let queuedSentences = []
-  let queueIndex = 0
   let savedNames = { kpc: '', pc: '' }
 
   function isGm() {
@@ -98,34 +96,10 @@
     }, text)
   }
 
-  function updateQueueUi() {
-    const root = document.getElementById(ROOT_ID)
-    const queue = root?.querySelector('.gm-tool-queue')
-    const next = root?.querySelector('[data-queue-next]')
-    if (!(queue instanceof HTMLElement) || !(next instanceof HTMLButtonElement)) return
-    const hasQueue = queueIndex < queuedSentences.length
-    queue.hidden = !hasQueue
-    if (hasQueue) next.textContent = `› 다음 ${queueIndex + 1} / ${queuedSentences.length}`
-  }
-
-  function clearQueue() {
-    queuedSentences = []
-    queueIndex = 0
-    updateQueueUi()
-  }
-
-  function sendNextSentence() {
-    const sentence = queuedSentences[queueIndex]
-    if (!sentence || !sendChat(`/desc ${sentence}`)) return
-    queueIndex += 1
-    updateQueueUi()
-  }
-
   function openScriptModal() {
     const veil = document.createElement('div')
     veil.className = 'gm-check-veil'
-    veil.innerHTML = '<form class="gm-script-modal"><div class="gm-script-title"><div><h3>문장 나누기</h3><p>PDF에서 복사한 줄바꿈을 정리한 뒤, 한 문장씩 큐에 담습니다.</p></div><button type="button" class="gm-tool-close" data-close>×</button></div><div class="gm-script-names"><label>KPC명<input type="text" maxlength="40" data-kpc autocomplete="off" placeholder="예: 하즈키"></label><label>PC명<input type="text" maxlength="40" data-pc autocomplete="off" placeholder="예: 유진"></label></div><label class="gm-script-option"><input type="checkbox" data-normalize checked> PDF 줄바꿈 정리</label><textarea data-source rows="7" placeholder="긴 스크립트를 붙여 넣으세요. KPC와 PC는 위 이름으로 치환되고, 조사도 자동으로 맞춥니다."></textarea><div class="gm-check-actions"><button type="button" class="btn sm" data-close>취소</button><button type="button" class="btn sm" data-split>문장 나누기</button></div><section class="gm-script-result" hidden><div class="gm-script-result-head"><strong>문장 목록</strong><span data-count></span></div><div data-sentences></div><div class="gm-check-actions"><button type="submit" class="btn sm pri">큐 시작</button></div></section></form>'
-    const form = veil.querySelector('form')
+    veil.innerHTML = '<section class="gm-script-modal"><div class="gm-script-title"><div><h3>문장 나누기</h3><p>PDF에서 복사한 줄바꿈을 정리한 뒤, 한 문장씩 직접 전송합니다.</p></div><button type="button" class="gm-tool-close" data-close>×</button></div><div class="gm-script-names"><label>KPC명<input type="text" maxlength="40" data-kpc autocomplete="off" placeholder="예: 하즈키"></label><label>PC명<input type="text" maxlength="40" data-pc autocomplete="off" placeholder="예: 유진"></label></div><label class="gm-script-option"><input type="checkbox" data-normalize checked> PDF 줄바꿈 정리</label><textarea data-source rows="7" placeholder="긴 스크립트를 붙여 넣으세요. KPC와 PC는 위 이름으로 치환되고, 조사도 자동으로 맞춥니다."></textarea><div class="gm-check-actions"><button type="button" class="btn sm" data-close>취소</button><button type="button" class="btn sm" data-split>문장 나누기</button></div><section class="gm-script-result" hidden><div class="gm-script-result-head"><strong>문장 목록</strong><span data-count></span></div><div data-sentences></div><div class="gm-check-actions"><button type="button" class="btn sm pri" data-send-next></button></div></section></section>'
     const source = veil.querySelector('[data-source]')
     const kpc = veil.querySelector('[data-kpc]')
     const pc = veil.querySelector('[data-pc]')
@@ -133,7 +107,9 @@
     const result = veil.querySelector('.gm-script-result')
     const sentenceList = veil.querySelector('[data-sentences]')
     const count = veil.querySelector('[data-count]')
+    const sendNext = veil.querySelector('[data-send-next]')
     let sentences = []
+    let sendIndex = 0
     const close = () => veil.remove()
 
     if (kpc instanceof HTMLInputElement) kpc.value = savedNames.kpc
@@ -153,11 +129,13 @@
       sentences.forEach((sentence, index) => {
         const row = document.createElement('div')
         row.className = 'gm-script-sentence'
+        if (index < sendIndex) row.classList.add('is-sent')
         const number = document.createElement('span')
         number.textContent = String(index + 1)
         const editor = document.createElement('textarea')
         editor.rows = 2
         editor.value = sentence
+        editor.dataset.sentenceIndex = String(index)
         editor.setAttribute('aria-label', `${index + 1}번 문장`)
         const preview = document.createElement('p')
         preview.className = 'gm-script-preview'
@@ -173,18 +151,45 @@
         remove.title = '문장 삭제'
         remove.addEventListener('click', () => {
           sentences.splice(index, 1)
+          if (index < sendIndex) sendIndex -= 1
           renderSentences()
         })
-        row.append(number, editor, remove, preview)
+        const add = document.createElement('button')
+        add.type = 'button'
+        add.className = 'gm-script-add'
+        add.textContent = '+ 다음 문장 추가'
+        add.title = '다음 문장 추가'
+        add.addEventListener('click', () => {
+          const nextIndex = index + 1
+          sentences.splice(nextIndex, 0, '')
+          if (nextIndex <= sendIndex) sendIndex += 1
+          renderSentences()
+          requestAnimationFrame(() => sentenceList.querySelector(`[data-sentence-index="${nextIndex}"]`)?.focus())
+        })
+        row.append(number, editor, remove, preview, add)
         sentenceList.append(row)
       })
       if (count instanceof HTMLElement) count.textContent = `${sentences.length}문장`
       result.hidden = !sentences.length
+      if (sendNext instanceof HTMLButtonElement) {
+        const completed = sendIndex >= sentences.length
+        sendNext.disabled = !sentences.length || completed
+        sendNext.textContent = completed ? '전송 완료' : `다음 문장 전송 ${sendIndex + 1} / ${sentences.length}`
+      }
     }
 
     function split() {
       if (!(source instanceof HTMLTextAreaElement)) return
       sentences = splitSentences(source.value, normalize instanceof HTMLInputElement && normalize.checked)
+      sendIndex = 0
+      renderSentences()
+    }
+
+    function sendCurrentSentence() {
+      while (sendIndex < sentences.length && !sentences[sendIndex].trim()) sendIndex += 1
+      const sentence = sentences[sendIndex]
+      if (!sentence || !sendChat(`/desc ${replaceRoleNames(sentence, names())}`)) return
+      sendIndex += 1
       renderSentences()
     }
 
@@ -193,17 +198,7 @@
       saveNames(names())
       renderSentences()
     }))
-    form?.addEventListener('submit', (event) => {
-      event.preventDefault()
-      if (!sentences.length) split()
-      const ready = sentences.map((sentence) => replaceRoleNames(sentence.trim(), names())).filter(Boolean)
-      if (!ready.length) return
-      saveNames(names())
-      queuedSentences = ready
-      queueIndex = 0
-      updateQueueUi()
-      close()
-    })
+    sendNext?.addEventListener('click', sendCurrentSentence)
     veil.addEventListener('mousedown', (event) => event.target === veil && close())
     veil.querySelectorAll('[data-close]').forEach((button) => button.addEventListener('click', close))
     document.body.append(veil)
@@ -216,7 +211,6 @@
     if (!chat || !isGm()) {
       existing?.remove()
       savedNames = { kpc: '', pc: '' }
-      clearQueue()
       return
     }
     if (existing?.parentElement === chat) return
@@ -225,7 +219,7 @@
     const root = document.createElement('div')
     root.id = ROOT_ID
     root.className = 'gm-tool-root'
-    root.innerHTML = '<section class="gm-tool-panel"><div class="gm-tool-head"><span>GM</span><button class="gm-tool-close" type="button">×</button></div><button class="gm-tool-macro" type="button" data-check>✓ 판정</button><button class="gm-tool-macro" type="button" data-script>≡ 문장</button><div class="gm-tool-queue" hidden><button class="gm-tool-macro gm-tool-next" type="button" data-queue-next></button><button class="gm-tool-queue-stop" type="button" data-queue-stop>큐 종료</button></div></section><button class="gm-tool-tab" type="button" title="GM 도구" aria-expanded="false">▮</button>'
+    root.innerHTML = '<section class="gm-tool-panel"><div class="gm-tool-head"><span>GM</span><button class="gm-tool-close" type="button">×</button></div><button class="gm-tool-macro" type="button" data-check>✓ 판정</button><button class="gm-tool-macro" type="button" data-script>≡ 문장</button></section><button class="gm-tool-tab" type="button" title="GM 도구" aria-expanded="false">▮</button>'
     const toggle = (open) => {
       root.classList.toggle('is-open', open)
       root.querySelector('.gm-tool-tab')?.setAttribute('aria-expanded', String(open))
@@ -234,10 +228,7 @@
     root.querySelector('.gm-tool-close')?.addEventListener('click', () => toggle(false))
     root.querySelector('[data-check]')?.addEventListener('click', openCheckModal)
     root.querySelector('[data-script]')?.addEventListener('click', openScriptModal)
-    root.querySelector('[data-queue-next]')?.addEventListener('click', sendNextSentence)
-    root.querySelector('[data-queue-stop]')?.addEventListener('click', clearQueue)
     chat.append(root)
-    updateQueueUi()
   }
 
   mount()

@@ -114,27 +114,6 @@ html[data-mobile] .msg.msg-cont {
   margin-top: 5px;
 }
 
-.gm-tool-queue {
-  margin-top: 7px;
-  padding-top: 7px;
-  border-top: 1px solid var(--line);
-}
-
-.gm-tool-next {
-  color: var(--ac, var(--tx));
-}
-
-.gm-tool-queue-stop {
-  width: 100%;
-  margin-top: 4px;
-  padding: 3px;
-  border: 0;
-  background: transparent;
-  color: var(--tx3);
-  font: 11px/1.2 inherit;
-  cursor: pointer;
-}
-
 .gm-check-veil {
   position: fixed;
   inset: 0;
@@ -312,6 +291,22 @@ html[data-mobile] .msg.msg-cont {
   grid-column: 2 / 4;
   margin: -2px 0 0;
   line-height: 1.45;
+}
+
+.gm-script-sentence.is-sent textarea,
+.gm-script-sentence.is-sent .gm-script-preview {
+  opacity: .48;
+}
+
+.gm-script-add {
+  grid-column: 2 / 4;
+  justify-self: start;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--tx3);
+  font: 11px/1.2 inherit;
+  cursor: pointer;
 }
 
 html[data-mobile] .gm-tool-root {
