@@ -110,6 +110,31 @@ html[data-mobile] .msg.msg-cont {
   cursor: pointer;
 }
 
+.gm-tool-macro + .gm-tool-macro {
+  margin-top: 5px;
+}
+
+.gm-tool-queue {
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 1px solid var(--line);
+}
+
+.gm-tool-next {
+  color: var(--ac, var(--tx));
+}
+
+.gm-tool-queue-stop {
+  width: 100%;
+  margin-top: 4px;
+  padding: 3px;
+  border: 0;
+  background: transparent;
+  color: var(--tx3);
+  font: 11px/1.2 inherit;
+  cursor: pointer;
+}
+
 .gm-check-veil {
   position: fixed;
   inset: 0;
@@ -156,6 +181,137 @@ html[data-mobile] .msg.msg-cont {
   justify-content: flex-end;
   gap: 7px;
   margin-top: 9px;
+}
+
+.gm-script-modal {
+  box-sizing: border-box;
+  width: min(540px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg2);
+  box-shadow: 0 18px 60px #0009;
+}
+
+.gm-script-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.gm-script-title h3,
+.gm-script-title p {
+  margin: 0;
+}
+
+.gm-script-title p,
+.gm-script-result-head span,
+.gm-script-preview {
+  color: var(--tx3);
+  font-size: 11px;
+}
+
+.gm-script-title p {
+  margin-top: 4px;
+}
+
+.gm-script-names {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 11px;
+}
+
+.gm-script-names label {
+  color: var(--tx2);
+  font-size: 11px;
+}
+
+.gm-script-names input,
+.gm-script-modal > textarea,
+.gm-script-sentence textarea {
+  box-sizing: border-box;
+  width: 100%;
+  border: 1px solid var(--line2);
+  border-radius: 7px;
+  background: var(--bg3);
+  color: var(--tx);
+  font: 12px/1.5 inherit;
+  resize: vertical;
+}
+
+.gm-script-names input {
+  height: 32px;
+  margin-top: 4px;
+  padding: 6px 8px;
+}
+
+.gm-script-option {
+  display: block;
+  margin-top: 10px;
+  color: var(--tx2);
+  font-size: 11px;
+}
+
+.gm-script-modal > textarea {
+  display: block;
+  min-height: 118px;
+  margin-top: 6px;
+  padding: 8px;
+}
+
+.gm-script-result {
+  margin-top: 13px;
+  padding-top: 11px;
+  border-top: 1px solid var(--line);
+}
+
+.gm-script-result-head {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 7px;
+  color: var(--tx);
+  font-size: 12px;
+}
+
+.gm-script-sentence {
+  position: relative;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) 22px;
+  gap: 6px;
+  align-items: start;
+  margin-top: 7px;
+}
+
+.gm-script-sentence > span {
+  padding-top: 6px;
+  color: var(--tx3);
+  font-size: 11px;
+  text-align: center;
+}
+
+.gm-script-sentence textarea {
+  min-height: 48px;
+  padding: 6px 7px;
+}
+
+.gm-script-remove {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--tx3);
+  cursor: pointer;
+}
+
+.gm-script-preview {
+  grid-column: 2 / 4;
+  margin: -2px 0 0;
+  line-height: 1.45;
 }
 
 html[data-mobile] .gm-tool-root {
