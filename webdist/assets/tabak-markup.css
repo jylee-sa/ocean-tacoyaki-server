@@ -114,36 +114,11 @@ html[data-mobile] .msg.msg-cont {
   margin-top: 5px;
 }
 
-.gm-check-veil {
-  position: fixed;
-  inset: 0;
-  z-index: 5000;
-  display: grid;
-  place-items: center;
-  background: #0007;
-}
-
-.gm-check-modal {
+.gm-script-window.gm-check-window {
   width: min(320px, calc(100vw - 32px));
-  padding: 14px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--bg2);
-  box-shadow: 0 18px 60px #0009;
 }
 
-.gm-check-modal h3,
-.gm-check-modal p {
-  margin: 0;
-}
-
-.gm-check-modal p {
-  margin-top: 4px;
-  color: var(--tx3);
-  font-size: 11px;
-}
-
-.gm-check-modal input {
+.gm-check-window input {
   box-sizing: border-box;
   width: 100%;
   height: 34px;

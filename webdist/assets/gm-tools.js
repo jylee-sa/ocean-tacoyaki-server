@@ -30,24 +30,27 @@
   }
 
   function openCheckModal() {
-    const veil = document.createElement('div')
-    veil.className = 'gm-check-veil'
-    veil.innerHTML = '<form class="gm-check-modal"><h3>판정 보내기</h3><p>문구 뒤에 ‘판정’이 붙어 전송됩니다.</p><input type="text" maxlength="120" placeholder="예: 관찰력" autocomplete="off"><div class="gm-check-actions"><button type="button" class="btn sm" data-close>취소</button><button type="submit" class="btn sm pri" disabled>전송</button></div></form>'
-    const form = veil.querySelector('form')
-    const input = veil.querySelector('input')
-    const submit = veil.querySelector('[type="submit"]')
-    const close = () => veil.remove()
+    const windowEl = document.createElement('section')
+    windowEl.className = 'gm-script-window gm-check-window'
+    windowEl.innerHTML = '<div class="gm-script-title" data-drag-handle><div><h3>판정 보내기</h3><p>문구 뒤에 ‘판정’이 붙어 전송됩니다.</p></div><button type="button" class="gm-tool-close" data-close>×</button></div><form class="gm-script-body"><input type="text" maxlength="120" placeholder="예: 관찰력" autocomplete="off"><div class="gm-check-actions"><button type="button" class="btn sm" data-close>취소</button><button type="submit" class="btn sm pri" disabled>전송</button></div></form>'
+    const form = windowEl.querySelector('form')
+    const input = windowEl.querySelector('input')
+    const submit = windowEl.querySelector('[type="submit"]')
+    const close = () => windowEl.remove()
 
     input?.addEventListener('input', () => {
       if (submit instanceof HTMLButtonElement && input instanceof HTMLInputElement) submit.disabled = !input.value.trim()
     })
     form?.addEventListener('submit', (event) => {
       event.preventDefault()
-      if (input instanceof HTMLInputElement && sendCheck(input.value)) close()
+      if (!(input instanceof HTMLInputElement) || !sendCheck(input.value)) return
+      input.value = ''
+      if (submit instanceof HTMLButtonElement) submit.disabled = true
+      input.focus()
     })
-    veil.addEventListener('mousedown', (event) => event.target === veil && close())
-    veil.querySelector('[data-close]')?.addEventListener('click', close)
-    document.body.append(veil)
+    windowEl.querySelectorAll('[data-close]').forEach((button) => button.addEventListener('click', close))
+    makeDraggable(windowEl, windowEl.querySelector('[data-drag-handle]'))
+    document.body.append(windowEl)
     input?.focus()
   }
 
