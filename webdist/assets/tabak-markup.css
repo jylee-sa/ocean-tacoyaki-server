@@ -33,9 +33,37 @@
   display: none;
 }
 
-.vn-layer.tabak-layer-resize {
-  pointer-events: auto;
+#tabak-layer-resize-handle {
+  position: fixed;
+  z-index: 60;
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid #fff;
+  border-radius: 5px;
+  background: var(--accent, #708fff);
+  color: #fff;
+  box-shadow: 0 2px 8px #0008;
   cursor: nwse-resize;
+  touch-action: none;
+}
+
+#tabak-layer-resize-handle[hidden] {
+  display: none;
+}
+
+.tabak-layer-handle-toggle {
+  width: 25px;
+  min-width: 25px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--line2);
+  border-radius: 5px;
+  background: var(--bg3);
+  color: var(--tx2);
+  cursor: pointer;
 }
 
 html[data-mobile] .msg.msg-cont {
