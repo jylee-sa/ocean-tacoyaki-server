@@ -31,9 +31,18 @@
   }
 
   function backgroundUrl(element) {
-    const value = getComputedStyle(element).backgroundImage
-    const match = /^url\(["']?(.*?)["']?\)$/.exec(value)
-    return match?.[1] || ''
+    const values = [getComputedStyle(element).backgroundImage, element.style.backgroundImage, element.style.background]
+    for (const value of values) {
+      const match = /url\(["']?(.*?)["']?\)/.exec(value)
+      if (match?.[1]) {
+        try {
+          return new URL(match[1], document.baseURI).href
+        } catch {
+          return match[1]
+        }
+      }
+    }
+    return ''
   }
 
   function layerThumbnail(input) {
@@ -107,11 +116,17 @@
 
   function syncLayerResize() {
     const inputs = isGm() ? [...document.querySelectorAll('input[type="range"][title^="크기 "]')] : []
+    const layers = [...document.querySelectorAll('.vn-layer')].filter((layer) => layer instanceof HTMLElement)
+    const usedLayers = new Set()
     const activeHandles = new Set()
     inputs.forEach((input, index) => {
       if (!(input instanceof HTMLInputElement)) return
-      const layer = layerForInput(input)
+      const matchedLayer = layerForInput(input)
+      const layer = matchedLayer && !usedLayers.has(matchedLayer)
+        ? matchedLayer
+        : layers[layers.length - 1 - index]
       if (!layer) return
+      usedLayers.add(layer)
       const id = input.dataset.tabakHandleId || `tabak-layer-resize-handle-${Date.now()}-${index}`
       input.dataset.tabakHandleId = id
       let handle = document.getElementById(id)
