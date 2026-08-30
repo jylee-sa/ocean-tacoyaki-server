@@ -46,17 +46,26 @@
       existing?.remove()
       return
     }
-    if (existing?.parentElement === rail) return
+    if (existing?.parentElement === rail) {
+      const active = Boolean(document.querySelector('.resize-done-bar'))
+      existing.classList.toggle('on', active)
+      existing.title = active ? '크기 조절 완료' : '선택한 이미지 레이어 크기 조절 켜기'
+      return
+    }
     existing?.remove()
     const button = document.createElement('button')
     button.id = 'tabak-token-resize-toggle'
     button.type = 'button'
     button.className = 'tool tabak-token-resize-toggle'
-    button.title = '선택한 이미지 레이어 크기 조절 켜기/끄기'
+    button.title = '선택한 이미지 레이어 크기 조절 켜기'
     button.setAttribute('aria-label', '선택한 이미지 레이어 크기 조절')
     button.textContent = '⤡'
-    button.addEventListener('click', toggleTokenResize)
+    button.addEventListener('click', () => {
+      toggleTokenResize()
+      requestAnimationFrame(syncTokenResizeButton)
+    })
     rail.querySelector('.tool')?.after(button)
+    requestAnimationFrame(syncTokenResizeButton)
   }
 
   function openCheckModal() {

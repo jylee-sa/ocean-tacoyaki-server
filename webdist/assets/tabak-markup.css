@@ -38,6 +38,10 @@
   line-height: 1;
 }
 
+.resize-done-bar {
+  display: none;
+}
+
 html[data-mobile] .msg.msg-cont {
   padding-left: 33px;
 }
