@@ -33,6 +33,11 @@
   display: none;
 }
 
+.vn-layer.tabak-layer-resize {
+  pointer-events: auto;
+  cursor: nwse-resize;
+}
+
 html[data-mobile] .msg.msg-cont {
   padding-left: 33px;
 }

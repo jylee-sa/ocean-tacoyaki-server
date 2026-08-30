@@ -29,6 +29,60 @@
     return sendChat(`/desc [check]${content} 판정[/check]`)
   }
 
+  function backgroundUrl(element) {
+    const value = getComputedStyle(element).backgroundImage
+    const match = /^url\(["']?(.*?)["']?\)$/.exec(value)
+    return match?.[1] || ''
+  }
+
+  function layerScaleInput(layer) {
+    const image = backgroundUrl(layer)
+    if (!image) return null
+    return [...document.querySelectorAll('input[type="range"][title^="크기 "]')].find((input) => {
+      const thumbnail = input.parentElement?.parentElement?.querySelector('span[style*="background"]')
+      return thumbnail instanceof HTMLElement && backgroundUrl(thumbnail) === image
+    }) || null
+  }
+
+  function syncLayerResize() {
+    if (!isGm()) return
+    document.querySelectorAll('.vn-layer').forEach((layer) => {
+      if (!(layer instanceof HTMLElement)) return
+      const input = layerScaleInput(layer)
+      layer.classList.toggle('tabak-layer-resize', input instanceof HTMLInputElement)
+      layer.title = input ? '드래그해 레이어 크기 조절' : ''
+      if (layer.dataset.tabakResizeBound || !input) return
+      layer.dataset.tabakResizeBound = '1'
+      layer.addEventListener('pointerdown', (event) => {
+        if (event.button !== 0) return
+        const scaleInput = layerScaleInput(layer)
+        if (!(scaleInput instanceof HTMLInputElement)) return
+        event.preventDefault()
+        event.stopPropagation()
+        const bounds = layer.getBoundingClientRect()
+        const centerX = bounds.left + bounds.width / 2
+        const centerY = bounds.top + bounds.height / 2
+        const startDistance = Math.max(24, Math.hypot(event.clientX - centerX, event.clientY - centerY))
+        const startScale = Number(scaleInput.value) || 100
+        const update = (moveEvent) => {
+          const distance = Math.max(24, Math.hypot(moveEvent.clientX - centerX, moveEvent.clientY - centerY))
+          const nextScale = Math.max(20, Math.min(300, Math.round(startScale * distance / startDistance / 5) * 5))
+          scaleInput.value = String(nextScale)
+          scaleInput.dispatchEvent(new Event('input', { bubbles: true }))
+        }
+        const finish = () => {
+          window.removeEventListener('pointermove', update)
+          window.removeEventListener('pointerup', finish)
+          window.removeEventListener('pointercancel', finish)
+          scaleInput.dispatchEvent(new Event('pointerup', { bubbles: true }))
+        }
+        window.addEventListener('pointermove', update)
+        window.addEventListener('pointerup', finish)
+        window.addEventListener('pointercancel', finish)
+      })
+    })
+  }
+
   function openCheckModal() {
     const windowEl = document.createElement('section')
     windowEl.className = 'gm-script-window gm-check-window'
@@ -254,7 +308,10 @@
       savedNames = { kpc: '', pc: '' }
       return
     }
-    if (existing?.parentElement === chat) return
+    if (existing?.parentElement === chat) {
+      syncLayerResize()
+      return
+    }
     existing?.remove()
 
     const root = document.createElement('div')
@@ -270,6 +327,7 @@
     root.querySelector('[data-check]')?.addEventListener('click', openCheckModal)
     root.querySelector('[data-script]')?.addEventListener('click', openScriptModal)
     chat.append(root)
+    syncLayerResize()
   }
 
   mount()
