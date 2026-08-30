@@ -97,20 +97,20 @@
   }
 
   function openScriptModal() {
-    const veil = document.createElement('div')
-    veil.className = 'gm-check-veil'
-    veil.innerHTML = '<section class="gm-script-modal"><div class="gm-script-title"><div><h3>문장 나누기</h3><p>PDF에서 복사한 줄바꿈을 정리한 뒤, 한 문장씩 직접 전송합니다.</p></div><button type="button" class="gm-tool-close" data-close>×</button></div><div class="gm-script-names"><label>KPC명<input type="text" maxlength="40" data-kpc autocomplete="off" placeholder="예: 하즈키"></label><label>PC명<input type="text" maxlength="40" data-pc autocomplete="off" placeholder="예: 유진"></label></div><label class="gm-script-option"><input type="checkbox" data-normalize checked> PDF 줄바꿈 정리</label><textarea data-source rows="7" placeholder="긴 스크립트를 붙여 넣으세요. KPC와 PC는 위 이름으로 치환되고, 조사도 자동으로 맞춥니다."></textarea><div class="gm-check-actions"><button type="button" class="btn sm" data-close>취소</button><button type="button" class="btn sm" data-split>문장 나누기</button></div><section class="gm-script-result" hidden><div class="gm-script-result-head"><strong>문장 목록</strong><span data-count></span></div><div data-sentences></div><div class="gm-check-actions"><button type="button" class="btn sm pri" data-send-next></button></div></section></section>'
-    const source = veil.querySelector('[data-source]')
-    const kpc = veil.querySelector('[data-kpc]')
-    const pc = veil.querySelector('[data-pc]')
-    const normalize = veil.querySelector('[data-normalize]')
-    const result = veil.querySelector('.gm-script-result')
-    const sentenceList = veil.querySelector('[data-sentences]')
-    const count = veil.querySelector('[data-count]')
-    const sendNext = veil.querySelector('[data-send-next]')
+    const windowEl = document.createElement('section')
+    windowEl.className = 'gm-script-window'
+    windowEl.innerHTML = '<div class="gm-script-title" data-drag-handle><div><h3>문장 나누기</h3><p>PDF에서 복사한 줄바꿈을 정리한 뒤, 한 문장씩 직접 전송합니다.</p></div><button type="button" class="gm-tool-close" data-close>×</button></div><div class="gm-script-body"><div class="gm-script-names"><label>KPC명<input type="text" maxlength="40" data-kpc autocomplete="off" placeholder="예: 하즈키"></label><label>PC명<input type="text" maxlength="40" data-pc autocomplete="off" placeholder="예: 유진"></label></div><label class="gm-script-option"><input type="checkbox" data-normalize checked> PDF 줄바꿈 정리</label><textarea data-source rows="7" placeholder="긴 스크립트를 붙여 넣으세요. KPC와 PC는 위 이름으로 치환되고, 조사도 자동으로 맞춥니다."></textarea><div class="gm-check-actions"><button type="button" class="btn sm" data-close>취소</button><button type="button" class="btn sm" data-reset>초기화</button><button type="button" class="btn sm" data-split>문장 나누기</button></div><section class="gm-script-result" hidden><div class="gm-script-result-head"><strong>문장 목록</strong><span data-count></span></div><div data-sentences></div><div class="gm-check-actions"><button type="button" class="btn sm pri" data-send-next></button></div></section></div>'
+    const source = windowEl.querySelector('[data-source]')
+    const kpc = windowEl.querySelector('[data-kpc]')
+    const pc = windowEl.querySelector('[data-pc]')
+    const normalize = windowEl.querySelector('[data-normalize]')
+    const result = windowEl.querySelector('.gm-script-result')
+    const sentenceList = windowEl.querySelector('[data-sentences]')
+    const count = windowEl.querySelector('[data-count]')
+    const sendNext = windowEl.querySelector('[data-send-next]')
     let sentences = []
     let sendIndex = 0
-    const close = () => veil.remove()
+    const close = () => windowEl.remove()
 
     if (kpc instanceof HTMLInputElement) kpc.value = savedNames.kpc
     if (pc instanceof HTMLInputElement) pc.value = savedNames.pc
@@ -157,7 +157,7 @@
         const add = document.createElement('button')
         add.type = 'button'
         add.className = 'gm-script-add'
-        add.textContent = '+ 다음 문장 추가'
+        add.textContent = '+'
         add.title = '다음 문장 추가'
         add.addEventListener('click', () => {
           const nextIndex = index + 1
@@ -166,7 +166,10 @@
           renderSentences()
           requestAnimationFrame(() => sentenceList.querySelector(`[data-sentence-index="${nextIndex}"]`)?.focus())
         })
-        row.append(number, editor, remove, preview, add)
+        const controls = document.createElement('div')
+        controls.className = 'gm-script-controls'
+        controls.append(remove, add)
+        row.append(number, editor, controls, preview)
         sentenceList.append(row)
       })
       if (count instanceof HTMLElement) count.textContent = `${sentences.length}문장`
@@ -193,16 +196,51 @@
       renderSentences()
     }
 
-    veil.querySelector('[data-split]')?.addEventListener('click', split)
+    function reset() {
+      if (source instanceof HTMLTextAreaElement) source.value = ''
+      sentences = []
+      sendIndex = 0
+      renderSentences()
+      source?.focus()
+    }
+
+    windowEl.querySelector('[data-split]')?.addEventListener('click', split)
+    windowEl.querySelector('[data-reset]')?.addEventListener('click', reset)
     ;[kpc, pc].forEach((input) => input?.addEventListener('input', () => {
       saveNames(names())
       renderSentences()
     }))
     sendNext?.addEventListener('click', sendCurrentSentence)
-    veil.addEventListener('mousedown', (event) => event.target === veil && close())
-    veil.querySelectorAll('[data-close]').forEach((button) => button.addEventListener('click', close))
-    document.body.append(veil)
+    windowEl.querySelectorAll('[data-close]').forEach((button) => button.addEventListener('click', close))
+    makeDraggable(windowEl, windowEl.querySelector('[data-drag-handle]'))
+    document.body.append(windowEl)
     source?.focus()
+  }
+
+  function makeDraggable(windowEl, handle) {
+    if (!(handle instanceof HTMLElement)) return
+    handle.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0 || event.target instanceof Element && event.target.closest('button, input, textarea')) return
+      const bounds = windowEl.getBoundingClientRect()
+      const offsetX = event.clientX - bounds.left
+      const offsetY = event.clientY - bounds.top
+      windowEl.style.left = `${bounds.left}px`
+      windowEl.style.top = `${bounds.top}px`
+      windowEl.style.transform = 'none'
+      handle.setPointerCapture(event.pointerId)
+      const move = (moveEvent) => {
+        windowEl.style.left = `${Math.max(0, moveEvent.clientX - offsetX)}px`
+        windowEl.style.top = `${Math.max(0, moveEvent.clientY - offsetY)}px`
+      }
+      const stop = () => {
+        handle.removeEventListener('pointermove', move)
+        handle.removeEventListener('pointerup', stop)
+        handle.removeEventListener('pointercancel', stop)
+      }
+      handle.addEventListener('pointermove', move)
+      handle.addEventListener('pointerup', stop)
+      handle.addEventListener('pointercancel', stop)
+    })
   }
 
   function mount() {

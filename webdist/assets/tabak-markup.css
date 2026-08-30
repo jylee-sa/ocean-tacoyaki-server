@@ -162,22 +162,32 @@ html[data-mobile] .msg.msg-cont {
   margin-top: 9px;
 }
 
-.gm-script-modal {
+.gm-script-window {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  z-index: 41;
+  display: flex;
+  flex-direction: column;
   box-sizing: border-box;
   width: min(540px, calc(100vw - 32px));
   max-height: calc(100vh - 32px);
-  overflow: auto;
-  padding: 14px;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--bg2);
   box-shadow: 0 18px 60px #0009;
+  transform: translate(-50%, -50%);
 }
 
 .gm-script-title {
   display: flex;
   justify-content: space-between;
   gap: 12px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg3);
+  cursor: move;
+  user-select: none;
 }
 
 .gm-script-title h3,
@@ -196,6 +206,12 @@ html[data-mobile] .msg.msg-cont {
   margin-top: 4px;
 }
 
+.gm-script-body {
+  min-height: 0;
+  overflow: auto;
+  padding: 14px;
+}
+
 .gm-script-names {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -209,7 +225,7 @@ html[data-mobile] .msg.msg-cont {
 }
 
 .gm-script-names input,
-.gm-script-modal > textarea,
+.gm-script-body > textarea,
 .gm-script-sentence textarea {
   box-sizing: border-box;
   width: 100%;
@@ -234,7 +250,7 @@ html[data-mobile] .msg.msg-cont {
   font-size: 11px;
 }
 
-.gm-script-modal > textarea {
+.gm-script-body > textarea {
   display: block;
   min-height: 118px;
   margin-top: 6px;
@@ -276,7 +292,13 @@ html[data-mobile] .msg.msg-cont {
   padding: 6px 7px;
 }
 
-.gm-script-remove {
+.gm-script-controls {
+  display: grid;
+  gap: 3px;
+}
+
+.gm-script-remove,
+.gm-script-add {
   width: 22px;
   height: 22px;
   padding: 0;
@@ -296,17 +318,6 @@ html[data-mobile] .msg.msg-cont {
 .gm-script-sentence.is-sent textarea,
 .gm-script-sentence.is-sent .gm-script-preview {
   opacity: .48;
-}
-
-.gm-script-add {
-  grid-column: 2 / 4;
-  justify-self: start;
-  padding: 2px 0;
-  border: 0;
-  background: transparent;
-  color: var(--tx3);
-  font: 11px/1.2 inherit;
-  cursor: pointer;
 }
 
 html[data-mobile] .gm-tool-root {
