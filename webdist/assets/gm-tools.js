@@ -1,7 +1,6 @@
 (() => {
   const ROOT_ID = 'gm-tool-root'
   let savedNames = { kpc: '', pc: '' }
-  const layerImageSizes = new Map()
 
   function isGm() {
     return Boolean(document.querySelector('option[value="npc"]'))
@@ -30,124 +29,34 @@
     return sendChat(`/desc [check]${content} 판정[/check]`)
   }
 
-  function backgroundUrl(element) {
-    const values = [getComputedStyle(element).backgroundImage, element.style.backgroundImage, element.style.background]
-    for (const value of values) {
-      const match = /url\(["']?(.*?)["']?\)/.exec(value)
-      if (match?.[1]) {
-        try {
-          return new URL(match[1], document.baseURI).href
-        } catch {
-          return match[1]
-        }
-      }
+  function toggleTokenResize() {
+    window.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 't',
+      code: 'KeyT',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true
+    }))
+  }
+
+  function syncTokenResizeButton() {
+    const rail = document.querySelector('.rail')
+    const existing = document.getElementById('tabak-token-resize-toggle')
+    if (!isGm() || !rail || !document.querySelector('.mapstage')) {
+      existing?.remove()
+      return
     }
-    return ''
-  }
-
-  function layerThumbnail(input) {
-    return input.parentElement?.parentElement?.querySelector('span[style*="background"]') || null
-  }
-
-  function layerForInput(input) {
-    const thumbnail = layerThumbnail(input)
-    const image = thumbnail instanceof HTMLElement ? backgroundUrl(thumbnail) : ''
-    if (!image) return null
-    return [...document.querySelectorAll('.vn-layer')].find((layer) => layer instanceof HTMLElement && backgroundUrl(layer) === image) || null
-  }
-
-  function visibleLayerBounds(layer) {
-    const bounds = layer.getBoundingClientRect()
-    if (getComputedStyle(layer).backgroundSize !== 'contain') return bounds
-    const source = backgroundUrl(layer)
-    const size = layerImageSizes.get(source)
-    if (!size) {
-      const image = new Image()
-      image.addEventListener('load', () => {
-        layerImageSizes.set(source, { width: image.naturalWidth, height: image.naturalHeight })
-        updateResizeHandle()
-      }, { once: true })
-      image.src = source
-      return bounds
-    }
-    const ratio = size.width / size.height
-    const width = Math.min(bounds.width, bounds.height * ratio)
-    const height = width / ratio
-    return new DOMRect(bounds.left + (bounds.width - width) / 2, bounds.top + (bounds.height - height) / 2, width, height)
-  }
-
-  function positionResizeHandle(handle, layer) {
-    const bounds = visibleLayerBounds(layer)
-    handle.style.left = `${bounds.right - 12}px`
-    handle.style.top = `${bounds.bottom - 12}px`
-  }
-
-  function startLayerResize(event) {
-    const handle = event.currentTarget
-    const input = handle?._tabakLayerInput
-    const layer = handle?._tabakLayerElement
-    if (!(input instanceof HTMLInputElement) || !(layer instanceof HTMLElement) || event.button !== 0) return
-    event.preventDefault()
-    const bounds = visibleLayerBounds(layer)
-    const startScale = Number(input.value) || 100
-    const startWidth = Math.max(1, bounds.width)
-    const startHeight = Math.max(1, bounds.height)
-    const startX = event.clientX
-    const startY = event.clientY
-    const update = (moveEvent) => {
-      const width = Math.max(1, startWidth + moveEvent.clientX - startX)
-      const height = Math.max(1, startHeight + moveEvent.clientY - startY)
-      const ratio = Math.hypot(width, height) / Math.hypot(startWidth, startHeight)
-      const nextScale = Math.max(20, Math.min(300, Math.round(startScale * ratio / 5) * 5))
-      input.value = String(nextScale)
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-      requestAnimationFrame(() => positionResizeHandle(handle, layer))
-    }
-    const finish = () => {
-      window.removeEventListener('pointermove', update)
-      window.removeEventListener('pointerup', finish)
-      window.removeEventListener('pointercancel', finish)
-      input.dispatchEvent(new Event('pointerup', { bubbles: true }))
-    }
-    window.addEventListener('pointermove', update)
-    window.addEventListener('pointerup', finish)
-    window.addEventListener('pointercancel', finish)
-  }
-
-  function syncLayerResize() {
-    const inputs = isGm() ? [...document.querySelectorAll('input[type="range"][title^="크기 "]')] : []
-    const layers = [...document.querySelectorAll('.vn-layer')].filter((layer) => layer instanceof HTMLElement)
-    const usedLayers = new Set()
-    const activeHandles = new Set()
-    inputs.forEach((input, index) => {
-      if (!(input instanceof HTMLInputElement)) return
-      const matchedLayer = layerForInput(input)
-      const layer = matchedLayer && !usedLayers.has(matchedLayer)
-        ? matchedLayer
-        : layers[layers.length - 1 - index]
-      if (!layer) return
-      usedLayers.add(layer)
-      const id = input.dataset.tabakHandleId || `tabak-layer-resize-handle-${Date.now()}-${index}`
-      input.dataset.tabakHandleId = id
-      let handle = document.getElementById(id)
-      if (!(handle instanceof HTMLButtonElement)) {
-        handle = document.createElement('button')
-        handle.id = id
-        handle.type = 'button'
-        handle.className = 'tabak-layer-resize-handle'
-        handle.title = '드래그해 레이어 크기 조절'
-        handle.textContent = '◢'
-        handle.addEventListener('pointerdown', startLayerResize)
-        document.body.append(handle)
-      }
-      handle._tabakLayerInput = input
-      handle._tabakLayerElement = layer
-      positionResizeHandle(handle, layer)
-      activeHandles.add(handle)
-    })
-    document.querySelectorAll('.tabak-layer-resize-handle').forEach((handle) => {
-      if (!activeHandles.has(handle)) handle.remove()
-    })
+    if (existing?.parentElement === rail) return
+    existing?.remove()
+    const button = document.createElement('button')
+    button.id = 'tabak-token-resize-toggle'
+    button.type = 'button'
+    button.className = 'tool tabak-token-resize-toggle'
+    button.title = '선택한 이미지 레이어 크기 조절 켜기/끄기'
+    button.setAttribute('aria-label', '선택한 이미지 레이어 크기 조절')
+    button.textContent = '⤡'
+    button.addEventListener('click', toggleTokenResize)
+    rail.querySelector('.tool')?.after(button)
   }
 
   function openCheckModal() {
@@ -376,7 +285,7 @@
       return
     }
     if (existing?.parentElement === chat) {
-      syncLayerResize()
+      syncTokenResizeButton()
       return
     }
     existing?.remove()
@@ -394,7 +303,7 @@
     root.querySelector('[data-check]')?.addEventListener('click', openCheckModal)
     root.querySelector('[data-script]')?.addEventListener('click', openScriptModal)
     chat.append(root)
-    syncLayerResize()
+    syncTokenResizeButton()
   }
 
   mount()
