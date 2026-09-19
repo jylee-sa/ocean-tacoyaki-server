@@ -2,7 +2,8 @@
   const MAX_LUCK_CARD_COST = 10
 
   function applyCompactMessages() {
-    const messages = [...document.querySelectorAll('.log > .msg')]
+    const messages = [...document.querySelectorAll('.log > .msg, .log > .msg-script')]
+    document.querySelectorAll('.log > .msg.msg-cont').forEach((message) => message.classList.remove('msg-cont'))
 
     for (let index = 1; index < messages.length; index += 1) {
       const previous = messages[index - 1]
@@ -12,7 +13,10 @@
       const previousTime = previous.querySelector('.who > span:last-child')?.textContent
       const currentTime = current.querySelector('.who > span:last-child')?.textContent
       const isPlainMessage =
-        previous.querySelector(':scope > .body > .txt') && current.querySelector(':scope > .body > .txt')
+        previous.matches('.msg:not(.msg-script)') &&
+        current.matches('.msg:not(.msg-script)') &&
+        previous.querySelector(':scope > .body > .txt') &&
+        current.querySelector(':scope > .body > .txt')
       const sameSpeaker =
         isPlainMessage &&
         previousName &&
@@ -22,7 +26,7 @@
         previousName === currentName &&
         previousTime === currentTime
 
-      current.classList.toggle('msg-cont', Boolean(sameSpeaker))
+      if (sameSpeaker) current.classList.add('msg-cont')
     }
   }
 

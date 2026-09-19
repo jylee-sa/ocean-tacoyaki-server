@@ -3570,6 +3570,13 @@ export function createRelay(opts?: {
   io.on('connection', (socket) => {
     // playerId/account 는 인증 미들웨어가 socket.data 에 채워둠.
     const playerId = socket.data.playerId
+    let typingStopTimer: ReturnType<typeof setTimeout> | undefined
+
+    const clearTypingStopTimer = () => {
+      if (!typingStopTimer) return
+      clearTimeout(typingStopTimer)
+      typingStopTimer = undefined
+    }
 
     /**
      * 소켓 이벤트 등록 — socket.on 대신 이 창구를 쓴다.
@@ -4398,14 +4405,27 @@ export function createRelay(opts?: {
       const channel =
         req.channel === 'ooc' || req.channel === 'whisper' || req.channel === 'group' ? req.channel : 'main'
       const groupId = channel === 'group' && typeof req.groupId === 'string' ? req.groupId : undefined
-      socket
-        .to(roomId)
-        .emit('chat:typing', {
-          playerId,
-          typing: req.typing === true,
-          channel,
-          ...(groupId ? { groupId } : {})
-        })
+      const emitTyping = (typing: boolean) =>
+        socket
+          .to(roomId)
+          .emit('chat:typing', {
+            playerId,
+            typing,
+            channel,
+            ...(groupId ? { groupId } : {})
+          })
+
+      clearTypingStopTimer()
+      if (req.typing !== true) {
+        emitTyping(false)
+        return
+      }
+
+      emitTyping(true)
+      typingStopTimer = setTimeout(() => {
+        typingStopTimer = undefined
+        emitTyping(false)
+      }, 1400)
     })
 
     // ===== 캐릭터 프레즌스 공유 =====
@@ -5759,6 +5779,7 @@ export function createRelay(opts?: {
     })
 
     on('disconnect', (reason) => {
+      clearTypingStopTimer()
       log('disconnect', playerId.slice(0, 8), reason, 'sockets', io.sockets.sockets.size)
       // 광장 정리 — 이 소켓이 광장 액터의 현재 소켓이면 퇴장 브로드캐스트 예약(더 새 소켓이 이어받았으면 유지).
       plaza.disconnect(playerId, socket.id)
