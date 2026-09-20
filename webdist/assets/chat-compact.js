@@ -77,6 +77,9 @@
   }
 
   let scheduled = false
+  let observedLog = null
+  let logObserver = null
+
   function schedule() {
     if (scheduled) return
     scheduled = true
@@ -84,17 +87,29 @@
       scheduled = false
       applyCompactMessages()
       applyLuckLimit()
-      renameDecorReset()
     })
   }
 
-  schedule()
-  new MutationObserver(schedule).observe(document.body, {
+  function watchChatLog() {
+    const nextLog = document.querySelector('.log')
+    if (nextLog === observedLog) return
+
+    logObserver?.disconnect()
+    observedLog = nextLog
+    if (!observedLog) return
+
+    logObserver = new MutationObserver(schedule)
+    logObserver.observe(observedLog, { childList: true })
+    schedule()
+  }
+
+  renameDecorReset()
+  watchChatLog()
+  new MutationObserver(watchChatLog).observe(document.body, {
     childList: true,
-    subtree: true,
-    attributes: true,
-    attributeFilter: ['class', 'style']
+    subtree: true
   })
+  document.addEventListener('click', () => requestAnimationFrame(renameDecorReset))
   document.addEventListener(
     'click',
     (event) => {
