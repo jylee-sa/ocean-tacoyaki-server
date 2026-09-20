@@ -9,7 +9,7 @@
       return
     }
     if (existing) {
-      existing.textContent = time
+      if (existing.textContent !== time) existing.textContent = time
       return
     }
     const text = message.querySelector(':scope > .body > .txt')
@@ -22,7 +22,7 @@
 
   function applyCompactMessages() {
     const messages = [...document.querySelectorAll('.log > .msg, .log > .msg-script')]
-    document.querySelectorAll('.log > .msg.msg-cont').forEach((message) => message.classList.remove('msg-cont'))
+    messages[0]?.classList.remove('msg-cont')
     setContinuationTime(messages[0], '')
 
     for (let index = 1; index < messages.length; index += 1) {
@@ -43,8 +43,8 @@
         currentName &&
         previousName === currentName
 
+      current.classList.toggle('msg-cont', Boolean(sameSpeaker))
       if (sameSpeaker) {
-        current.classList.add('msg-cont')
         setContinuationTime(current, previousTime === currentTime ? '' : currentTime)
       } else {
         setContinuationTime(current, '')
