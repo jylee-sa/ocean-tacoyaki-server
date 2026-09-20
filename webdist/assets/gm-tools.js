@@ -1,6 +1,7 @@
 (() => {
   const ROOT_ID = 'gm-tool-root'
   let savedNames = { kpc: '', pc: '' }
+  let scriptActive = false
 
   function isGm() {
     return Boolean(document.querySelector('option[value="npc"]'))
@@ -66,6 +67,81 @@
     })
     rail.querySelector('.tool')?.after(button)
     requestAnimationFrame(syncTokenResizeButton)
+  }
+
+  function scriptButton() {
+    return [...document.querySelectorAll('button')].find((button) =>
+      button.title.startsWith('스크립트(/desc)')
+    )
+  }
+
+  function updateScriptState() {
+    const button = scriptButton()
+    if (button) scriptActive = button.classList.contains('on')
+  }
+
+  function closeDecorWindow() {
+    const panel = document.querySelector('.decor-win')
+    const windowEl = panel?.closest('[role="dialog"], .window, .floatwin') ?? panel?.parentElement
+    windowEl?.querySelector('button[title="닫기"]')?.click()
+  }
+
+  function openDecorAndToggleScript() {
+    const existing = scriptButton()
+    if (existing) {
+      existing.click()
+      updateScriptState()
+      syncGmScriptToggle()
+      return
+    }
+
+    const opener = [...document.querySelectorAll('button')].find((button) =>
+      button.title.includes('채팅 꾸미기') || button.getAttribute('aria-label')?.includes('채팅 꾸미기')
+    )
+    if (!opener) return
+    opener.click()
+    requestAnimationFrame(() => {
+      const button = scriptButton()
+      if (!button) return
+      button.click()
+      updateScriptState()
+      closeDecorWindow()
+      syncGmScriptToggle()
+    })
+  }
+
+  function syncGmScriptToggle() {
+    const options = document.querySelector('.cin-opts')
+    const existing = document.getElementById('tabak-gm-script-toggle')
+    const secretButton = [...options?.querySelectorAll('button') ?? []].find((button) => button.title.includes('비밀 굴림'))
+    const resetButton = [...options?.querySelectorAll('button') ?? []].find((button) =>
+      button.title.startsWith('스크립트·꾸미기를') || button.textContent?.includes('꾸미기 해제')
+    )
+    if (!isGm() || !options || !secretButton) {
+      existing?.remove()
+      return
+    }
+
+    if (resetButton && !resetButton.dataset.tabakScriptReset) {
+      resetButton.dataset.tabakScriptReset = '1'
+      resetButton.addEventListener('click', () => {
+        scriptActive = false
+        requestAnimationFrame(syncGmScriptToggle)
+      })
+    }
+
+    updateScriptState()
+    const button = existing instanceof HTMLButtonElement ? existing : document.createElement('button')
+    if (!existing) {
+      button.id = 'tabak-gm-script-toggle'
+      button.type = 'button'
+      button.className = 'q tabak-gm-script-toggle'
+      button.addEventListener('click', openDecorAndToggleScript)
+      secretButton.after(button)
+    }
+    button.classList.toggle('on', scriptActive)
+    button.textContent = scriptActive ? '스크립트 해제' : '스크립트'
+    button.title = scriptActive ? '스크립트(/desc) 모드 해제' : '스크립트(/desc) 모드 켜기'
   }
 
   function openCheckModal() {
@@ -290,11 +366,14 @@
     const existing = document.getElementById(ROOT_ID)
     if (!chat || !isGm()) {
       existing?.remove()
+      chat?.classList.remove('tabak-gm-chat')
       savedNames = { kpc: '', pc: '' }
       return
     }
+    chat.classList.add('tabak-gm-chat')
     if (existing?.parentElement === chat) {
       syncTokenResizeButton()
+      syncGmScriptToggle()
       return
     }
     existing?.remove()
@@ -313,8 +392,14 @@
     root.querySelector('[data-script]')?.addEventListener('click', openScriptModal)
     chat.append(root)
     syncTokenResizeButton()
+    syncGmScriptToggle()
   }
 
   mount()
-  new MutationObserver(mount).observe(document.body, { childList: true, subtree: true })
+  new MutationObserver(mount).observe(document.body, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['class']
+  })
 })()

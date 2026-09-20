@@ -1,9 +1,29 @@
 (() => {
   const MAX_LUCK_CARD_COST = 10
 
+  function setContinuationTime(message, time) {
+    if (!message) return
+    const existing = message.querySelector(':scope > .body > .tabak-cont-time')
+    if (!time) {
+      existing?.remove()
+      return
+    }
+    if (existing) {
+      existing.textContent = time
+      return
+    }
+    const text = message.querySelector(':scope > .body > .txt')
+    if (!text) return
+    const label = document.createElement('div')
+    label.className = 'tabak-cont-time'
+    label.textContent = time
+    text.before(label)
+  }
+
   function applyCompactMessages() {
     const messages = [...document.querySelectorAll('.log > .msg, .log > .msg-script')]
     document.querySelectorAll('.log > .msg.msg-cont').forEach((message) => message.classList.remove('msg-cont'))
+    setContinuationTime(messages[0], '')
 
     for (let index = 1; index < messages.length; index += 1) {
       const previous = messages[index - 1]
@@ -21,12 +41,14 @@
         isPlainMessage &&
         previousName &&
         currentName &&
-        previousTime &&
-        currentTime &&
-        previousName === currentName &&
-        previousTime === currentTime
+        previousName === currentName
 
-      if (sameSpeaker) current.classList.add('msg-cont')
+      if (sameSpeaker) {
+        current.classList.add('msg-cont')
+        setContinuationTime(current, previousTime === currentTime ? '' : currentTime)
+      } else {
+        setContinuationTime(current, '')
+      }
     }
   }
 
@@ -43,6 +65,17 @@
     })
   }
 
+  function renameDecorReset() {
+    document.querySelectorAll('.cin-opts > button[title^="스크립트·꾸미기를"]').forEach((button) => {
+      button.title = '채팅 꾸미기 모두 해제'
+      for (const node of button.childNodes) {
+        if (node.nodeType === Node.TEXT_NODE && node.textContent?.includes('스크립트 해제')) {
+          node.textContent = ' 꾸미기 해제'
+        }
+      }
+    })
+  }
+
   let scheduled = false
   function schedule() {
     if (scheduled) return
@@ -51,6 +84,7 @@
       scheduled = false
       applyCompactMessages()
       applyLuckLimit()
+      renameDecorReset()
     })
   }
 

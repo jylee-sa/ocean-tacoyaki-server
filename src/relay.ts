@@ -3956,9 +3956,14 @@ export function createRelay(opts?: {
       // 색·크기·기울임·굵기 등 다른 꾸미기는 그대로 허용. 멤버·관리자·GM 은 이미지 허용.
       if (socket.data.account?.role === 'guest') raw = raw.replace(/\[img=[^\]]*\]/gi, '')
       if (!raw.trim()) return
+      const descMatch = /^\s*\/(?:desc|d)(?:\s+|$)/i.exec(raw)
+      if (descMatch) {
+        raw = raw.slice(descMatch[0].length).trim()
+        if (!raw) return
+      }
       raw = convertMarkdownEmphasis(raw)
 
-      const emasMatch = sender.role === 'GM' ? /^\s*\/emas(?:\s+|$)/i.exec(raw) : null
+      const emasMatch = sender.role === 'GM' ? /^\s*\/(?:emas|e)(?:\s+|$)/i.exec(raw) : null
       if (emasMatch) {
         const text = raw.slice(emasMatch[0].length).trim()
         if (!text) return
@@ -3966,13 +3971,13 @@ export function createRelay(opts?: {
       }
       const gmMarkup = sender.role === 'GM' ? convertGmMarkup(raw) : null
       if (gmMarkup) raw = gmMarkup
-      const legacyStyle = req.script === true ? convertLegacyStyle(raw) : null
+      const legacyStyle = req.script === true || descMatch ? convertLegacyStyle(raw) : null
       if (legacyStyle) raw = legacyStyle
 
       // 서버 권위 다이스: 명령이면 서버가 굴리고, 아니면 평문 메시지.
       // author/color/playerId 는 서버가 참가자 정보로 스탬프 (클라 전송값 무시 → 위조 방지).
       // script(/desc)는 꾸미기 본문이므로 다이스로 해석하지 않음.
-      const isScript = req.script === true || Boolean(gmMarkup) || Boolean(emasMatch)
+      const isScript = req.script === true || Boolean(descMatch) || Boolean(gmMarkup) || Boolean(emasMatch)
       const dice = isScript ? null : parseCommand(raw)
       const id = randomUUID()
       const time = Date.now()

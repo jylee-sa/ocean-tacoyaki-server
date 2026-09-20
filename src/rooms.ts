@@ -333,7 +333,7 @@ const BGM_KINDS = ['file', 'youtube']
 /** 동시 재생 BGM 트랙 최대 수(환경음+배경음 등 레이어드). */
 export const MAX_BGM_TRACKS = 5
 /** 볼륨 0~1 클램프(유한·기본값 처리). */
-function clampVol(v: unknown, fallback = 1): number {
+function clampVol(v: unknown, fallback = 0.2): number {
   return typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : fallback
 }
 

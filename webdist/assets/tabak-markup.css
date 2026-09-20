@@ -33,9 +33,111 @@
   display: none;
 }
 
+.msg.msg-cont:has(.tabak-cont-time) {
+  margin-top: 4px;
+}
+
+.tabak-cont-time {
+  margin-bottom: 2px;
+  color: var(--tx3);
+  font-size: calc(10px * var(--chat-font-scale, 1));
+  font-weight: 500;
+  line-height: 1.3;
+}
+
+.msg > .body > .who {
+  margin-left: -1px;
+}
+
 .tabak-token-resize-toggle {
   font-size: 19px;
   line-height: 1;
+}
+
+.tabak-chat-help-toggle {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 17px;
+  font-weight: 800;
+}
+
+.tabak-chat-help-panel {
+  position: fixed;
+  z-index: 200;
+  max-height: min(560px, calc(100vh - 16px));
+  overflow: auto;
+  border: 1px solid var(--line2);
+  border-radius: 10px;
+  background: var(--bg2);
+  box-shadow: var(--shadow);
+}
+
+.tabak-help-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 10px 7px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg2);
+  color: var(--tx);
+  font-size: 12px;
+}
+
+.tabak-help-head button {
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--tx3);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.tabak-help-head button:hover {
+  background: var(--bg3);
+  color: var(--tx);
+}
+
+.tabak-help-section {
+  padding: 8px 10px 2px;
+}
+
+.tabak-help-section:last-child {
+  padding-bottom: 8px;
+}
+
+.tabak-help-section h4 {
+  margin: 0 0 4px;
+  color: var(--accent);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+.tabak-help-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: baseline;
+  padding: 2px 0;
+  color: var(--tx3);
+  font-size: 10.5px;
+  line-height: 1.35;
+}
+
+.tabak-help-row code {
+  overflow: hidden;
+  color: var(--tx);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tabak-help-row span {
+  white-space: nowrap;
 }
 
 .resize-done-bar {
@@ -121,6 +223,12 @@ html[data-mobile] .msg.msg-cont {
 
 .gm-tool-macro + .gm-tool-macro {
   margin-top: 5px;
+}
+
+.tabak-gm-script-toggle.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
 }
 
 .gm-script-window.gm-check-window {
