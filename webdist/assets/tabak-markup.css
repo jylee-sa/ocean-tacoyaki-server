@@ -50,7 +50,7 @@
   margin-left: 0;
   color: var(--tx);
   font-size: calc(12.5px * var(--chat-font-scale, 1));
-  font-weight: 800;
+  font-weight: 700;
 }
 
 .tabak-token-resize-toggle {
