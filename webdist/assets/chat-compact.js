@@ -1,29 +1,8 @@
 (() => {
   const MAX_LUCK_CARD_COST = 10
 
-  function setContinuationTime(message, time) {
-    if (!message) return
-    const existing = message.querySelector(':scope > .body > .tabak-cont-time')
-    if (!time) {
-      existing?.remove()
-      return
-    }
-    if (existing) {
-      if (existing.textContent !== time) existing.textContent = time
-      return
-    }
-    const text = message.querySelector(':scope > .body > .txt')
-    if (!text) return
-    const label = document.createElement('div')
-    label.className = 'tabak-cont-time'
-    label.textContent = time
-    text.before(label)
-  }
-
   function applyCompactMessages() {
-    const messages = [...document.querySelectorAll('.log > .msg, .log > .msg-script')]
-    messages[0]?.classList.remove('msg-cont')
-    setContinuationTime(messages[0], '')
+    const messages = [...document.querySelectorAll('.log > .msg')]
 
     for (let index = 1; index < messages.length; index += 1) {
       const previous = messages[index - 1]
@@ -33,22 +12,18 @@
       const previousTime = previous.querySelector('.who > span:last-child')?.textContent
       const currentTime = current.querySelector('.who > span:last-child')?.textContent
       const isPlainMessage =
-        previous.matches('.msg:not(.msg-script)') &&
-        current.matches('.msg:not(.msg-script)') &&
         previous.querySelector(':scope > .body > .txt') &&
         current.querySelector(':scope > .body > .txt')
       const sameSpeaker =
         isPlainMessage &&
         previousName &&
         currentName &&
-        previousName === currentName
+        previousTime &&
+        currentTime &&
+        previousName === currentName &&
+        previousTime === currentTime
 
       current.classList.toggle('msg-cont', Boolean(sameSpeaker))
-      if (sameSpeaker) {
-        setContinuationTime(current, previousTime === currentTime ? '' : currentTime)
-      } else {
-        setContinuationTime(current, '')
-      }
     }
   }
 
@@ -77,9 +52,6 @@
   }
 
   let scheduled = false
-  let observedLog = null
-  let logObserver = null
-
   function schedule() {
     if (scheduled) return
     scheduled = true
@@ -87,29 +59,17 @@
       scheduled = false
       applyCompactMessages()
       applyLuckLimit()
+      renameDecorReset()
     })
   }
 
-  function watchChatLog() {
-    const nextLog = document.querySelector('.log')
-    if (nextLog === observedLog) return
-
-    logObserver?.disconnect()
-    observedLog = nextLog
-    if (!observedLog) return
-
-    logObserver = new MutationObserver(schedule)
-    logObserver.observe(observedLog, { childList: true })
-    schedule()
-  }
-
-  renameDecorReset()
-  watchChatLog()
-  new MutationObserver(watchChatLog).observe(document.body, {
+  schedule()
+  new MutationObserver(schedule).observe(document.body, {
     childList: true,
-    subtree: true
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['class', 'style']
   })
-  document.addEventListener('click', () => requestAnimationFrame(renameDecorReset))
   document.addEventListener(
     'click',
     (event) => {
