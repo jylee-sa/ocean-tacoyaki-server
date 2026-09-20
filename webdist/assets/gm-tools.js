@@ -2,6 +2,7 @@
   const ROOT_ID = 'gm-tool-root'
   let savedNames = { kpc: '', pc: '' }
   let scriptActive = false
+  let mountQueued = false
 
   function isGm() {
     return Boolean(document.querySelector('option[value="npc"]'))
@@ -69,80 +70,56 @@
     requestAnimationFrame(syncTokenResizeButton)
   }
 
-  function scriptButton() {
-    return [...document.querySelectorAll('button')].find((button) =>
-      button.title.startsWith('스크립트(/desc)')
-    )
-  }
+  function installDescriptionMode() {
+    const socket = window.tacoyakiHost?.host?.net?.getSocket?.()
+    if (!socket || socket.__tabakDescriptionMode) return Boolean(socket)
 
-  function updateScriptState() {
-    const button = scriptButton()
-    if (button) scriptActive = button.classList.contains('on')
-  }
-
-  function closeDecorWindow() {
-    const panel = document.querySelector('.decor-win')
-    const windowEl = panel?.closest('[role="dialog"], .window, .floatwin') ?? panel?.parentElement
-    windowEl?.querySelector('button[title="닫기"]')?.click()
-  }
-
-  function openDecorAndToggleScript() {
-    const existing = scriptButton()
-    if (existing) {
-      existing.click()
-      updateScriptState()
-      syncGmScriptToggle()
-      return
+    const emit = socket.emit.bind(socket)
+    socket.emit = (event, request, ...rest) => {
+      const text = typeof request?.text === 'string' ? request.text : ''
+      const isDescription = /^\s*\/(?:desc|d)(?:\s+|$)/i.test(text)
+      if (event === 'chat:send' && scriptActive && text.trim() && !isDescription) {
+        request = { ...request, text: `/desc ${text}` }
+      }
+      return emit(event, request, ...rest)
     }
+    socket.__tabakDescriptionMode = true
+    return true
+  }
 
-    const opener = [...document.querySelectorAll('button')].find((button) =>
-      button.title.includes('채팅 꾸미기') || button.getAttribute('aria-label')?.includes('채팅 꾸미기')
-    )
-    if (!opener) return
-    opener.click()
-    requestAnimationFrame(() => {
-      const button = scriptButton()
-      if (!button) return
-      button.click()
-      updateScriptState()
-      closeDecorWindow()
-      syncGmScriptToggle()
-    })
+  function toggleDescriptionMode() {
+    scriptActive = !scriptActive
+    syncGmScriptToggle()
   }
 
   function syncGmScriptToggle() {
     const options = document.querySelector('.cin-opts')
     const existing = document.getElementById('tabak-gm-script-toggle')
     const secretButton = [...options?.querySelectorAll('button') ?? []].find((button) => button.title.includes('비밀 굴림'))
-    const resetButton = [...options?.querySelectorAll('button') ?? []].find((button) =>
-      button.title.startsWith('스크립트·꾸미기를') || button.textContent?.includes('꾸미기 해제')
-    )
     if (!isGm() || !options || !secretButton) {
       existing?.remove()
       return
     }
 
-    if (resetButton && !resetButton.dataset.tabakScriptReset) {
-      resetButton.dataset.tabakScriptReset = '1'
-      resetButton.addEventListener('click', () => {
-        scriptActive = false
-        requestAnimationFrame(syncGmScriptToggle)
-      })
-    }
-
-    updateScriptState()
     const button = existing instanceof HTMLButtonElement ? existing : document.createElement('button')
     if (!existing) {
       button.id = 'tabak-gm-script-toggle'
       button.type = 'button'
       button.className = 'q tabak-gm-script-toggle'
-      button.addEventListener('click', openDecorAndToggleScript)
+      button.addEventListener('click', toggleDescriptionMode)
       secretButton.after(button)
     }
     button.classList.toggle('on', scriptActive)
-    button.textContent = scriptActive ? '스크립트 해제' : '스크립트'
-    button.title = scriptActive ? '스크립트(/desc) 모드 해제' : '스크립트(/desc) 모드 켜기'
+    const label = scriptActive ? '스크립트 해제' : '스크립트'
+    const title = scriptActive ? '스크립트(/desc) 모드 해제' : '스크립트(/desc) 모드 켜기'
+    if (button.textContent !== label) button.textContent = label
+    if (button.title !== title) button.title = title
   }
+
+  const descriptionModeTimer = setInterval(() => {
+    if (!installDescriptionMode()) return
+    clearInterval(descriptionModeTimer)
+  }, 250)
 
   function openCheckModal() {
     const windowEl = document.createElement('section')
@@ -395,11 +372,18 @@
     syncGmScriptToggle()
   }
 
+  function scheduleMount() {
+    if (mountQueued) return
+    mountQueued = true
+    requestAnimationFrame(() => {
+      mountQueued = false
+      mount()
+    })
+  }
+
   mount()
-  new MutationObserver(mount).observe(document.body, {
+  new MutationObserver(scheduleMount).observe(document.body, {
     childList: true,
-    subtree: true,
-    attributes: true,
-    attributeFilter: ['class']
+    subtree: true
   })
 })()

@@ -1,30 +1,38 @@
 (() => {
   const MAX_LUCK_CARD_COST = 10
 
+  function isContinuation(previous, current) {
+    if (!previous?.matches('.msg') || !current?.matches('.msg')) return false
+    if (!previous.querySelector(':scope > .body > .txt') || !current.querySelector(':scope > .body > .txt')) return false
+    const previousName = previous.querySelector('.who > span')?.textContent
+    const currentName = current.querySelector('.who > span')?.textContent
+    return Boolean(previousName && currentName && previousName === currentName)
+  }
+
+  function assignMessageLabelClasses(message) {
+    const labels = [...message.querySelectorAll(':scope > .body > .who > span')]
+    const author = labels[0]
+    const time = labels.at(-1)
+    author?.classList.add('msg-author')
+    if (time && time !== author) time.classList.add('msg-time')
+  }
+
   function applyCompactMessages() {
-    const messages = [...document.querySelectorAll('.log > .msg')]
-
-    for (let index = 1; index < messages.length; index += 1) {
-      const previous = messages[index - 1]
+    const messages = [...document.querySelectorAll('.log > .msg, .log > .msg-script')]
+    for (let index = 0; index < messages.length; index += 1) {
       const current = messages[index]
-      const previousName = previous.querySelector('.who > span')?.textContent
-      const currentName = current.querySelector('.who > span')?.textContent
-      const previousTime = previous.querySelector('.who > span:last-child')?.textContent
-      const currentTime = current.querySelector('.who > span:last-child')?.textContent
-      const isPlainMessage =
-        previous.querySelector(':scope > .body > .txt') &&
-        current.querySelector(':scope > .body > .txt')
-      const sameSpeaker =
-        isPlainMessage &&
-        previousName &&
-        currentName &&
-        previousTime &&
-        currentTime &&
-        previousName === currentName &&
-        previousTime === currentTime
-
-      current.classList.toggle('msg-cont', Boolean(sameSpeaker))
+      if (!current.matches('.msg')) continue
+      assignMessageLabelClasses(current)
+      current.classList.toggle('msg-cont', isContinuation(messages[index - 1], current))
     }
+  }
+
+  function applyLatestCompactMessage() {
+    const messages = [...document.querySelectorAll('.log > .msg, .log > .msg-script')]
+    const current = messages.at(-1)
+    if (!current?.matches('.msg')) return
+    assignMessageLabelClasses(current)
+    current.classList.toggle('msg-cont', isContinuation(messages.at(-2), current))
   }
 
   function applyLuckLimit() {
@@ -51,25 +59,52 @@
     })
   }
 
-  let scheduled = false
-  function schedule() {
-    if (scheduled) return
-    scheduled = true
+  let refreshQueued = false
+  function scheduleInitialRefresh() {
+    if (refreshQueued) return
+    refreshQueued = true
     requestAnimationFrame(() => {
-      scheduled = false
+      refreshQueued = false
       applyCompactMessages()
       applyLuckLimit()
       renameDecorReset()
     })
   }
 
-  schedule()
-  new MutationObserver(schedule).observe(document.body, {
-    childList: true,
-    subtree: true,
-    attributes: true,
-    attributeFilter: ['class', 'style']
-  })
+  function installChatListener() {
+    const socket = window.tacoyakiHost?.host?.net?.getSocket?.()
+    if (!socket || socket.__tabakChatCompact) return Boolean(socket)
+    socket.on('chat:new', () => {
+      requestAnimationFrame(() => {
+        applyLatestCompactMessage()
+        applyLuckLimit()
+      })
+    })
+    socket.on('room:sync', scheduleInitialRefresh)
+    socket.__tabakChatCompact = true
+    return true
+  }
+
+  const socketTimer = setInterval(() => {
+    if (!installChatListener()) return
+    clearInterval(socketTimer)
+  }, 250)
+
+  function waitForChatLog() {
+    if (document.querySelector('.log')) {
+      scheduleInitialRefresh()
+      return
+    }
+    const observer = new MutationObserver(() => {
+      if (!document.querySelector('.log')) return
+      observer.disconnect()
+      scheduleInitialRefresh()
+    })
+    observer.observe(document.body, { childList: true, subtree: true })
+  }
+
+  waitForChatLog()
+  renameDecorReset()
   document.addEventListener(
     'click',
     (event) => {
@@ -84,4 +119,5 @@
     },
     true
   )
+  document.addEventListener('click', () => requestAnimationFrame(renameDecorReset))
 })()
