@@ -26,12 +26,30 @@
     })
     if (!store || store.__tabakBgmDefaultVolume) return Boolean(store)
 
-    const playTrack = store.getState().playTrack
+    const { addFiles, addYouTube, playTrack } = store.getState()
+    const applyLibraryDefaults = () => {
+      const { library, setLibraryVolume } = store.getState()
+      for (const track of library) {
+        if (track.volume == null) setLibraryVolume(track.id, DEFAULT_VOLUME)
+      }
+    }
+
     store.setState({
+      async addFiles(...args) {
+        const result = await addFiles(...args)
+        applyLibraryDefaults()
+        return result
+      },
+      addYouTube(...args) {
+        const result = addYouTube(...args)
+        if (result?.ok) applyLibraryDefaults()
+        return result
+      },
       playTrack(track) {
         playTrack(track?.volume == null ? { ...track, volume: DEFAULT_VOLUME } : track)
       }
     })
+    applyLibraryDefaults()
     store.__tabakBgmDefaultVolume = true
     return true
   }
