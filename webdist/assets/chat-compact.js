@@ -17,8 +17,8 @@
     if (time && time !== author) time.classList.add('msg-time')
   }
 
-  function applyCompactMessages() {
-    const messages = [...document.querySelectorAll('.log > .msg, .log > .msg-script')]
+  function applyCompactMessages(log) {
+    const messages = [...log.querySelectorAll(':scope > .msg, :scope > .msg-script')]
     for (let index = 0; index < messages.length; index += 1) {
       const current = messages[index]
       if (!current.matches('.msg')) continue
@@ -63,26 +63,12 @@
     })
   }
 
-  let refreshQueued = false
-  function scheduleInitialRefresh() {
-    if (refreshQueued) return
-    refreshQueued = true
-    requestAnimationFrame(() => {
-      refreshQueued = false
-      applyCompactMessages()
-      applyLuckLimit()
-      renameDecorReset()
-    })
-  }
-
-  let observedLog
-  let logObserver
+  const observedLogs = new WeakSet()
 
   function observeChatLog(log) {
-    if (observedLog === log) return
-    logObserver?.disconnect()
-    observedLog = log
-    logObserver = new MutationObserver((records) => {
+    if (observedLogs.has(log)) return
+    observedLogs.add(log)
+    const observer = new MutationObserver((records) => {
       for (const record of records) {
         for (const node of record.addedNodes) {
           if (!(node instanceof HTMLElement) || !node.matches('.msg, .msg-script')) continue
@@ -91,23 +77,26 @@
         }
       }
     })
-    logObserver.observe(log, { childList: true })
-    scheduleInitialRefresh()
+    observer.observe(log, { childList: true })
+    applyCompactMessages(log)
   }
 
-  function waitForChatLog() {
-    const log = document.querySelector('.log')
-    if (log) return observeChatLog(log)
-    const observer = new MutationObserver(() => {
-      const nextLog = document.querySelector('.log')
-      if (!nextLog) return
-      observer.disconnect()
-      observeChatLog(nextLog)
+  function observeChatLogs() {
+    document.querySelectorAll('.log').forEach(observeChatLog)
+    const observer = new MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (!(node instanceof HTMLElement)) continue
+          if (node.matches('.log')) observeChatLog(node)
+          node.querySelectorAll('.log').forEach(observeChatLog)
+        }
+      }
     })
     observer.observe(document.body, { childList: true, subtree: true })
   }
 
-  waitForChatLog()
+  observeChatLogs()
+  applyLuckLimit()
   renameDecorReset()
   document.addEventListener(
     'click',
