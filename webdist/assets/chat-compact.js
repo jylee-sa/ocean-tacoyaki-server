@@ -27,12 +27,16 @@
     }
   }
 
-  function applyLatestCompactMessage() {
-    const messages = [...document.querySelectorAll('.log > .msg, .log > .msg-script')]
-    const current = messages.at(-1)
-    if (!current?.matches('.msg')) return
+  function previousMessage(message) {
+    let previous = message.previousElementSibling
+    while (previous && !previous.matches('.msg, .msg-script')) previous = previous.previousElementSibling
+    return previous
+  }
+
+  function applyCompactMessage(current) {
+    if (!current.matches('.msg')) return
     assignMessageLabelClasses(current)
-    current.classList.toggle('msg-cont', isContinuation(messages.at(-2), current))
+    current.classList.toggle('msg-cont', isContinuation(previousMessage(current), current))
   }
 
   function applyLuckLimit() {
@@ -71,34 +75,34 @@
     })
   }
 
-  function installChatListener() {
-    const socket = window.tacoyakiHost?.host?.net?.getSocket?.()
-    if (!socket || socket.__tabakChatCompact) return Boolean(socket)
-    socket.on('chat:new', () => {
-      requestAnimationFrame(() => {
-        applyLatestCompactMessage()
-        applyLuckLimit()
-      })
+  let observedLog
+  let logObserver
+
+  function observeChatLog(log) {
+    if (observedLog === log) return
+    logObserver?.disconnect()
+    observedLog = log
+    logObserver = new MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (!(node instanceof HTMLElement) || !node.matches('.msg, .msg-script')) continue
+          applyCompactMessage(node)
+          applyLuckLimit(node)
+        }
+      }
     })
-    socket.on('room:sync', scheduleInitialRefresh)
-    socket.__tabakChatCompact = true
-    return true
+    logObserver.observe(log, { childList: true })
+    scheduleInitialRefresh()
   }
 
-  const socketTimer = setInterval(() => {
-    if (!installChatListener()) return
-    clearInterval(socketTimer)
-  }, 250)
-
   function waitForChatLog() {
-    if (document.querySelector('.log')) {
-      scheduleInitialRefresh()
-      return
-    }
+    const log = document.querySelector('.log')
+    if (log) return observeChatLog(log)
     const observer = new MutationObserver(() => {
-      if (!document.querySelector('.log')) return
+      const nextLog = document.querySelector('.log')
+      if (!nextLog) return
       observer.disconnect()
-      scheduleInitialRefresh()
+      observeChatLog(nextLog)
     })
     observer.observe(document.body, { childList: true, subtree: true })
   }

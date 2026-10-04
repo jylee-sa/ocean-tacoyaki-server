@@ -339,7 +339,7 @@ function clampVol(v: unknown, fallback = 0.2): number {
 
 /**
  * BGM set 페이로드 방어적 정규화. 소스 없거나 kind 가 허용값 밖이면 null(무시).
- * title 은 200자 제한, loop 기본 true(앰비언트), volume 0~1(기본 1), playing 은 서버가 true 로 스탬프.
+ * title 은 200자 제한, loop 기본 true(앰비언트), volume 0~1(기본 0.2), playing 은 서버가 true 로 스탬프.
  */
 function normalizeBgm(
   req:
