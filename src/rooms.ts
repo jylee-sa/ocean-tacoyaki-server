@@ -14,7 +14,8 @@ import {
   truncateSync,
   openSync,
   readSync,
-  closeSync
+  closeSync,
+  copyFileSync
 } from 'node:fs'
 import { mkdir, writeFile, rename, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -24,6 +25,7 @@ import type {
   Appearance,
   BgmState,
   Channel,
+  CharacterRecord,
   Combatant,
   CombatState,
   ChatMessage,
@@ -105,6 +107,9 @@ const ARCHIVE_RETRY_MS = 30_000
 const MAX_HISTORY_HARD = MAX_HISTORY * 2
 /** 캐릭터 보관대 상한 — 한 방에서 오간 저널이 아무리 많아도 이만큼만 남긴다(오래된 것부터 덜어 낸다). */
 const MAX_CHAR_POOL = 200
+/** 플레이어 한 명이 한 방에 보관할 수 있는 전체 시트 수. */
+const MAX_ROOM_CHARACTERS = 200
+const CHARACTER_MIGRATION_BACKUP_SUFFIX = '.pre-character-copy.bak'
 /** 맵당 오브젝트 개수 상한 — 방 상태 팽창 방어(coerceLoadedMap 모든 진입점 적용). */
 const MAX_TOKENS_PER_MAP = 2000
 /** 방이 들고 있는 GM 선택지 개수 상한 — 넘으면 오래된 것부터 버린다(옵션 스크립트가 무거워 무제한 불가). */
@@ -200,8 +205,10 @@ export interface Room {
    *  (눌러도 서버가 모르는 선택지라 조용히 무시). 최근 MAX_ROOM_CHOICES 개만 보관. */
   choices?: Map<string, { options: { id: string; label: string; script?: string }[]; responders: Map<string, string> }>
   messages: ChatMessage[]
-  /** 방별 캐릭터 시트 멤버십 — playerId(=계정) → 이 방에 속한 charId[]. 영속. 시트 데이터는 계정 라이브러리에. */
+  /** 방별 캐릭터 시트 멤버십 — playerId(=계정) → 이 방에 속한 charId[]. */
   charRooms: Map<string, string[]>
+  /** 방별 독립 캐릭터 시트 — 라이브러리 템플릿과 연결되지 않는 영속 복제본. */
+  roomCharacters: Map<string, Map<string, CharacterRecord>>
   createdAt: number
   lastActivityAt: number
 }
@@ -1201,6 +1208,27 @@ function poolKey(playerId: string | undefined, charId: string | undefined): stri
   return playerId && charId ? playerId.length + ':' + playerId + charId : ''
 }
 
+function cloneCharacter(record: CharacterRecord): CharacterRecord {
+  return structuredClone(record)
+}
+
+function loadRoomCharacters(value: unknown): Map<string, Map<string, CharacterRecord>> {
+  const out = new Map<string, Map<string, CharacterRecord>>()
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return out
+  for (const [playerId, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (!playerId || !Array.isArray(raw)) continue
+    const chars = new Map<string, CharacterRecord>()
+    for (const item of raw.slice(0, MAX_ROOM_CHARACTERS)) {
+      if (!item || typeof item !== 'object') continue
+      const record = item as CharacterRecord
+      if (typeof record.id !== 'string' || !record.id) continue
+      chars.set(record.id.slice(0, 200), cloneCharacter(record))
+    }
+    if (chars.size) out.set(playerId, chars)
+  }
+  return out
+}
+
 /** 방 → 영속 파일(JSON). 장면·메타·멤버·전체 채팅. 참가자/프레즌스는 런타임이라 제외. */
 function roomToFile(room: Room): Record<string, unknown> {
   const { messages, avatarPool } = packAvatars(room.messages) // 채팅 두상 풀 분리 — 파일 크기 절감
@@ -1239,6 +1267,9 @@ function roomToFile(room: Room): Record<string, unknown> {
     messages,
     avatarPool, // 채팅 두상 풀
     charRooms: Object.fromEntries(room.charRooms), // 방별 시트 멤버십
+    roomCharacters: Object.fromEntries(
+      [...room.roomCharacters].map(([playerId, chars]) => [playerId, [...chars.values()]])
+    ),
     saveSlots: room.saveSlots ?? [], // 저장 슬롯(반면 전체 명명 저장 · 최대 3)
     visualCards: room.visualCards ?? [], // 비주얼 카드 — 이미지/음향
     decks: room.decks, // 덱 — 남은 더미까지(재시작해도 진행 중인 판이 이어지게)
@@ -1295,6 +1326,7 @@ function roomFromFile(data: unknown): Room | null {
         )
     }
   }
+  const roomCharacters = loadRoomCharacters(o.roomCharacters)
   // 세션 멤버 명단 복원 — 재시작에도 한번 접속한 멤버를 권한 대상으로 유지. 전부 오프라인(connected:false)으로 시작.
   const participants = new Map<string, Participant>()
   for (const p of Array.isArray(o.participantList) ? o.participantList : []) {
@@ -1352,6 +1384,7 @@ function roomFromFile(data: unknown): Room | null {
     channels: coerceChannels(o.channels),
     messages,
     charRooms,
+    roomCharacters,
     createdAt: typeof o.createdAt === 'number' ? o.createdAt : now,
     lastActivityAt: typeof o.lastActivityAt === 'number' ? o.lastActivityAt : now
   }
@@ -2485,6 +2518,8 @@ export class RoomStore {
       if (existsSync(j)) unlinkSync(j)
       const r = this.rescuePath(id)
       if (existsSync(r)) unlinkSync(r)
+      const characterBackup = join(this.roomDir, id + CHARACTER_MIGRATION_BACKUP_SUFFIX)
+      if (existsSync(characterBackup)) unlinkSync(characterBackup)
       this.removeArchive(id) // 방을 지우면 보관해 둔 대화도 함께 걷는다
     } catch (e) {
       console.error(`[rooms] ${id} 파일 삭제 실패:`, e)
@@ -2554,6 +2589,7 @@ export class RoomStore {
       channels: new Map(),
       messages: [],
       charRooms: new Map(),
+      roomCharacters: new Map(),
       createdAt: now,
       lastActivityAt: now
     }
@@ -2687,7 +2723,7 @@ export class RoomStore {
   /**
    * 참가자 본인의 멤버십 탈퇴 — '내 세션 목록'(listForAccount)에서 이 방을 제거한다.
    * 소유자는 불가(소유자 없는 방 방지 — 소유자는 방 삭제를 사용). 채팅 이력은 보존(퇴장자의 과거 발화 유지 — leave/kick 과 동일).
-   * 시트 데이터는 계정 라이브러리에 있으므로 방별 멤버십(charRooms)만 정리해도 손실 없음.
+   * 방별 독립 시트도 함께 정리한다. 라이브러리 템플릿은 건드리지 않는다.
    * 같은 초대 코드로 다시 참가하면 members 에 재등록되어 복귀 가능(코드 재발급 없음 — 강퇴와 다름).
    */
   leaveMembership(roomId: string, accountId: string, playerId: string): { ok: true } | { error: string } {
@@ -2704,6 +2740,7 @@ export class RoomStore {
     // 아주 떠난 사람의 보관대 몫도 걷는다 — 안 걷으면 그 사람 그림이 방 파일과 입장 전송에 영원히 남는다.
     this.dropPooledFor(room, playerId)
     room.charRooms.delete(playerId)
+    room.roomCharacters.delete(playerId)
     room.lastActivityAt = Date.now() // dirty 마킹 — 자동저장(flushDirty)이 영속화
     return { ok: true }
   }
@@ -4486,6 +4523,24 @@ export class RoomStore {
     return out
   }
 
+  /** 계정 탈퇴 시 다른 사람이 소유한 방에 남은 멤버·방 시트·프레즌스 흔적을 제거한다. */
+  removeAccountFromRooms(accountId: string): void {
+    if (!accountId) return
+    for (const room of this.rooms.values()) {
+      if (room.ownerId === accountId) continue
+      let touched = room.members.delete(accountId)
+      touched = room.gmIds.delete(accountId) || touched
+      touched = room.participants.delete(accountId) || touched
+      touched = room.characters.delete(accountId) || touched
+      touched = room.charRooms.delete(accountId) || touched
+      touched = room.roomCharacters.delete(accountId) || touched
+      this.dropPooledFor(room, accountId)
+      if (!touched) continue
+      room.lastActivityAt = Date.now()
+      void this.flush(room)
+    }
+  }
+
   /** 세션 복사 — 소유자만. 장면(맵·자료·외형·BGM·카드)만 복제, 참가자·채팅·멤버는 초기화. 새 방 요약 반환. */
   duplicateRoom(roomId: string, accountId: string): RoomSummary | undefined {
     const src = this.rooms.get(roomId)
@@ -4538,6 +4593,7 @@ export class RoomStore {
       channels: new Map(),
       messages: [],
       charRooms: new Map(),
+      roomCharacters: new Map(),
       createdAt: now,
       lastActivityAt: now
     }
@@ -4610,7 +4666,7 @@ export class RoomStore {
       bgm: room.bgm,
       combat: room.combat,
       channels: this.channelsFor(room, viewer),
-      charRoomIds: viewer ? (room.charRooms.get(viewer.playerId) ?? []) : [], // 요청자의 이 방 시트 멤버십
+      charRoomIds: viewer ? (room.charRooms.get(viewer.playerId) ?? []) : [], // 요청자의 방 독립 시트 id
       // 이 뷰어가 이미 고른 선택지(메시지 id → 옵션 id) — 재입장해도 잠금이 되살아난다.
       // 없으면 이미 답한 사람에게 버튼이 다시 열리고, 눌러 본 항목이 '선택했습니다'로 잘못 남는다.
       // 값이 빈 문자열이면 '고르긴 했는데 무엇인지 모른다'(구버전 저장본)는 뜻이다.
@@ -4652,6 +4708,77 @@ export class RoomStore {
     return room.charRooms.get(playerId) ?? []
   }
 
+  /** 방에 저장된 플레이어의 독립 시트 목록. 반환값은 외부 변형을 막기 위한 복제본이다. */
+  roomCharactersFor(roomId: string, playerId: string): CharacterRecord[] {
+    const chars = this.rooms.get(roomId)?.roomCharacters.get(playerId)
+    return chars ? [...chars.values()].map(cloneCharacter) : []
+  }
+
+  getRoomCharacter(roomId: string, playerId: string, charId: string): CharacterRecord | undefined {
+    const record = this.rooms.get(roomId)?.roomCharacters.get(playerId)?.get(charId)
+    return record ? cloneCharacter(record) : undefined
+  }
+
+  /** 방 복제본 저장. 멤버십도 함께 보장한다. */
+  saveRoomCharacter(roomId: string, playerId: string, record: CharacterRecord): CharacterRecord | undefined {
+    const room = this.rooms.get(roomId)
+    if (!room || !record || typeof record.id !== 'string' || !record.id) return undefined
+    let chars = room.roomCharacters.get(playerId)
+    if (!chars) {
+      chars = new Map()
+      room.roomCharacters.set(playerId, chars)
+    }
+    if (!chars.has(record.id) && chars.size >= MAX_ROOM_CHARACTERS) return undefined
+    const saved = cloneCharacter({ ...record, id: record.id.slice(0, 200) })
+    chars.set(saved.id, saved)
+    const ids = room.charRooms.get(playerId) ?? []
+    if (!ids.includes(saved.id)) room.charRooms.set(playerId, [...ids, saved.id])
+    room.lastActivityAt = Date.now()
+    return cloneCharacter(saved)
+  }
+
+  /** 구버전 방의 ID 연결을 현재 라이브러리 스냅샷으로 한 번만 독립 복제한다. */
+  migrateRoomCharacters(roomId: string, playerId: string, templates: CharacterRecord[]): boolean {
+    const room = this.rooms.get(roomId)
+    if (!room) return false
+    const ids = room.charRooms.get(playerId) ?? []
+    if (!ids.length) return false
+    const source = new Map(templates.map((record) => [record.id, record]))
+    let changed = false
+    for (const id of ids) {
+      if (room.roomCharacters.get(playerId)?.has(id)) continue
+      const record = source.get(id)
+      if (!record) continue
+      if (!changed && this.persist) {
+        const current = join(this.roomDir, room.id + '.json')
+        const backup = join(this.roomDir, room.id + CHARACTER_MIGRATION_BACKUP_SUFFIX)
+        if (existsSync(current) && !existsSync(backup)) {
+          try {
+            copyFileSync(current, backup)
+            console.log(`[rooms] 📦 ${room.title}: 캐릭터 복제 전 백업 저장`)
+          } catch (error) {
+            console.error(`[rooms] ${room.id} 캐릭터 복제 전 백업 실패:`, error)
+            return false
+          }
+        }
+      }
+      if (this.saveRoomCharacter(roomId, playerId, record)) changed = true
+    }
+    return changed
+  }
+
+  /** 서버 시작 시 기존 모든 방의 라이브러리 ID 연결을 독립 복제본으로 선제 전환한다. */
+  migrateAllRoomCharacters(resolveTemplates: (playerId: string) => CharacterRecord[]): number {
+    let migratedPlayers = 0
+    for (const room of this.rooms.values()) {
+      for (const playerId of room.charRooms.keys()) {
+        if (this.migrateRoomCharacters(room.id, playerId, resolveTemplates(playerId))) migratedPlayers++
+      }
+    }
+    if (migratedPlayers) void this.flushDirty()
+    return migratedPlayers
+  }
+
   /** 방에서 내 시트 제거(라이브러리 원본은 유지). 갱신된 목록 반환. */
   removeRoomChar(roomId: string, playerId: string, charId: string): string[] | undefined {
     const room = this.rooms.get(roomId)
@@ -4661,6 +4788,8 @@ export class RoomStore {
       playerId,
       cur.filter((id) => id !== charId)
     )
+    room.roomCharacters.get(playerId)?.delete(charId)
+    if (room.roomCharacters.get(playerId)?.size === 0) room.roomCharacters.delete(playerId)
     room.lastActivityAt = Date.now()
     return room.charRooms.get(playerId) ?? []
   }
@@ -4819,6 +4948,8 @@ export class RoomStore {
       const id = randomUUID()
       let code = genCode()
       while (this.codeToId.has(code)) code = genCode()
+      const previousOwnerId = room.ownerId
+      const ownerCharacters = room.roomCharacters.get(previousOwnerId)
       room.id = id
       room.code = code
       room.ownerId = accountId
@@ -4831,7 +4962,15 @@ export class RoomStore {
           { playerId: accountId, nick: (ownerNick || '탐사자').slice(0, 80), color: DEFAULT_PL_COLOR, role: 'GM', connected: false }
         ]
       ])
-      room.charRooms = new Map() // 시트 멤버십은 옛 playerId 기준이라 초기화(소유자가 방에 다시 추가)
+      room.roomCharacters = ownerCharacters
+        ? new Map([
+            [
+              accountId,
+              new Map([...ownerCharacters].map(([charId, record]) => [charId, cloneCharacter(record)]))
+            ]
+          ])
+        : new Map()
+      room.charRooms = ownerCharacters ? new Map([[accountId, [...ownerCharacters.keys()]]]) : new Map()
       room.lastActivityAt = Date.now()
       this.rooms.set(id, room)
       this.codeToId.set(code, id)

@@ -16,6 +16,7 @@ import { getHeapStatistics } from 'node:v8'
 import { Server } from 'socket.io'
 import type {
   CharIdentityReq,
+  CharacterRecord,
   ChatChannel,
   ChatMessage,
   ClientToServerEvents,
@@ -110,6 +111,19 @@ const HANDOUT_CONTENT_STYLE = 'display:block;padding:12px'
 const HANDOUT_TITLE_STYLE = 'display:block;margin:0 0 8px;color:var(--tx);font-size:15px;font-weight:700'
 const HANDOUT_BODY_STYLE =
   'display:block;color:var(--tx);font-size:13px;line-height:1.7;white-space:pre-wrap'
+
+function templateFromRoomCharacter(record: CharacterRecord): CharacterRecord {
+  const copy = structuredClone(record) as CharacterRecord & { portrait?: Record<string, unknown> }
+  copy.id = randomUUID()
+  if (copy.portrait) {
+    delete copy.portrait.headshot
+    delete copy.portrait.standingHeight
+    copy.portrait.standings = []
+    copy.portrait.headshots = []
+    copy.portrait.currentExpression = 0
+  }
+  return copy
+}
 
 function escapeNativeMarkupText(value: string): string {
   return value.replaceAll('[', '［').replaceAll(']', '］')
@@ -355,6 +369,10 @@ export function createRelay(opts?: {
   const store = opts?.rooms ?? new RoomStore()
   const auth = opts?.auth ?? createAuthStore({ persist: false })
   const characters = opts?.characters ?? createCharacterStore({ persist: false })
+  const migratedCharacterOwners = store.migrateAllRoomCharacters((accountId) => characters.list(accountId))
+  if (migratedCharacterOwners) {
+    console.log(`[characters] 🧩 기존 방 캐릭터 ${migratedCharacterOwners}명 독립 복제 완료`)
+  }
   const assets = opts?.assets ?? createAssetStore({ persist: false })
   const dm = opts?.dm ?? createDmStore({ persist: false })
   const notif = opts?.notif ?? createNotifStore({ persist: false })
@@ -1146,6 +1164,7 @@ export function createRelay(opts?: {
             void io.in('user:' + pid).socketsLeave(room.id)
           }
         }
+        store.removeAccountFromRooms(accountId)
         // 탈퇴 계정 본인의 열린 소켓 강제 종료 — disconnect 핸들러가 프레즌스·레이트리밋 정리 + 오프라인 브로드캐스트(유령 온라인 방지).
         void io.in('acct:' + accountId).disconnectSockets(true)
         res.writeHead(200, { 'content-type': 'application/json' })
@@ -2436,6 +2455,7 @@ export function createRelay(opts?: {
             syncPresence(pid) // 세션중 표시 해제(socket.data.roomId 잔존 대비 — inSession 이 store 재검증)
           }
         }
+        store.removeAccountFromRooms(accountId)
         void io.in('acct:' + accountId).disconnectSockets(true) // 본인 소켓 강제 종료(프레즌스·레이트리밋 정리)
         res.writeHead(200, JSON_H)
         res.end(JSON.stringify({ ok: true }))
@@ -3643,6 +3663,42 @@ export function createRelay(opts?: {
       socket.emit('role:changed', { role: account.role })
     }
 
+    const characterView = (accountId: string, roomId?: string): CharacterRecord[] => {
+      const merged = new Map(characters.list(accountId).map((record) => [record.id, record]))
+      if (roomId) {
+        for (const record of store.roomCharactersFor(roomId, accountId)) merged.set(record.id, record)
+      }
+      return [...merged.values()]
+    }
+
+    const prepareRoomCharacters = (roomId: string, accountId: string): void => {
+      if (store.migrateRoomCharacters(roomId, accountId, characters.list(accountId))) {
+        log('character-migrate', accountId.slice(0, 8), roomId.slice(0, 8))
+      }
+    }
+
+    const emitCharacterViews = (accountId: string, exceptSocketId?: string): void => {
+      for (const peer of io.sockets.sockets.values()) {
+        if (peer.id === exceptSocketId || peer.data.account?.id !== accountId) continue
+        peer.emit('char:library', characterView(accountId, peer.data.roomId))
+      }
+    }
+
+    const emitRoomCharacterList = (roomId: string, accountId: string): void => {
+      const charIds = store.roomCharsFor(roomId, accountId)
+      for (const peer of io.sockets.sockets.values()) {
+        if (peer.data.account?.id !== accountId || peer.data.roomId !== roomId) continue
+        peer.emit('room:char:list', { playerId: accountId, charIds })
+      }
+    }
+
+    const pushRoomCharacter = (roomId: string, accountId: string, character: CharacterRecord): void => {
+      for (const peer of io.sockets.sockets.values()) {
+        if (peer.data.account?.id !== accountId || peer.data.roomId !== roomId) continue
+        peer.emit('sheet:push', { character })
+      }
+    }
+
     const broadcastParticipants = (roomId: string): void => {
       const room = store.getRoom(roomId)
       if (room) io.to(roomId).emit('room:participants', store.participants(room))
@@ -3708,6 +3764,7 @@ export function createRelay(opts?: {
         roomViews.get(roomId)?.delete(playerId)
       }
       socket.data.roomId = undefined
+      if (account) socket.emit('char:library', characterView(account.id))
       broadcastParticipants(roomId)
     }
 
@@ -3730,6 +3787,7 @@ export function createRelay(opts?: {
       void socket.join(room.id)
       void socket.join('user:' + playerId) // 개인 룸(귓속말/비밀/추방/핸드아웃 타깃)
       if (socket.data.account) syncPresence(socket.data.account.id) // '세션중' 자동 파생
+      if (account) socket.emit('char:library', characterView(account.id, room.id))
       ack?.({ ok: true, data: { self, room: await lightenAvatarPool(store.snapshot(room, self)) } })
       broadcastParticipants(room.id)
       emitPositions(room.id) // 입장 GM 에게 현재 위치 집계 전달
@@ -3755,6 +3813,10 @@ export function createRelay(opts?: {
       void socket.join(res.room.id)
       void socket.join('user:' + playerId) // 개인 룸(귓속말/비밀/추방/핸드아웃 타깃)
       if (socket.data.account) syncPresence(socket.data.account.id) // '세션중' 자동 파생
+      if (account) {
+        prepareRoomCharacters(res.room.id, account.id)
+        socket.emit('char:library', characterView(account.id, res.room.id))
+      }
       const snap = await lightenAvatarPool(store.snapshot(res.room, res.self))
       // 재입장 착지 맵 — 이 플레이어가 마지막으로 보고한 맵(room:where)이 살아 있으면 거기로.
       const last = roomPositions.get(res.room.id)?.get(playerId)
@@ -3790,6 +3852,10 @@ export function createRelay(opts?: {
       void socket.join(res.room.id)
       void socket.join('user:' + playerId)
       if (socket.data.account) syncPresence(socket.data.account.id) // '세션중' 자동 파생
+      if (account) {
+        prepareRoomCharacters(res.room.id, account.id)
+        socket.emit('char:library', characterView(account.id, res.room.id))
+      }
       ack?.({ ok: true, data: { self: res.self, room: await lightenAvatarPool(store.snapshot(res.room, res.self)) } })
       broadcastParticipants(res.room.id)
       emitPositions(res.room.id)
@@ -4526,6 +4592,8 @@ export function createRelay(opts?: {
       store.leave(roomId, target)
       // 멤버십도 제거 — 안 지우면 추방당한 계정이 '내 세션 목록'에서 room:enter(members.has 통과)로 재입장 가능(코드 재발급 무력화).
       room.members.delete(target)
+      room.charRooms.delete(target)
+      room.roomCharacters.delete(target)
       // 휘발 위치·뷰맵에서 추방 대상 제거(room:leave 와 동일 — 죽은 항목 잔류 방지). GM 잔류로 방은 유지.
       roomPositions.get(roomId)?.delete(target)
       roomViews.get(roomId)?.delete(target)
@@ -4562,38 +4630,52 @@ export function createRelay(opts?: {
     })
 
     // ===== 캐릭터 시트 영속 (인증 계정 전용) =====
-    // 저장/삭제는 본인 계정에만. 변경 시 그 계정의 모든 소켓(다기기)에 최신 라이브러리 동기화.
+    // 방 안의 시트는 방 복제본에, 그 밖의 시트는 라이브러리 템플릿에 저장한다.
     on('char:save', (req) => {
       const acct = socket.data.account
       if (!acct || !req || typeof req.id !== 'string' || !req.id) return
-      // 발신 소켓은 제외(socket.to) — 저장한 본인은 이미 로컬에 최신 상태가 있고, 자기 에코로 전체 라이브러리를
-      // 되받으면 편집 중 시트를 옛 스냅샷으로 덮을 수 있다. 같은 계정의 '다른 기기'에는 그대로 동기화된다.
-      if (characters.save(acct.id, req))
-        socket.to('acct:' + acct.id).emit('char:library', characters.list(acct.id))
+      const roomId = socket.data.roomId
+      const roomCharacter = roomId && store.roomCharsFor(roomId, acct.id).includes(req.id)
+      const saved = roomCharacter
+        ? store.saveRoomCharacter(roomId, acct.id, req)
+        : characters.save(acct.id, req)
+      if (saved) emitCharacterViews(acct.id, socket.id)
     })
 
     on('char:delete', (req) => {
       const acct = socket.data.account
       if (!acct || !req || typeof req.id !== 'string') return
-      if (characters.remove(acct.id, req.id))
-        socket.to('acct:' + acct.id).emit('char:library', characters.list(acct.id))
+      if (characters.remove(acct.id, req.id)) emitCharacterViews(acct.id, socket.id)
     })
 
-    // ===== 방별 시트 멤버십 — 내 라이브러리 시트를 이 방에 추가/제거(서버 영속). =====
+    on('char:template:save', (req) => {
+      const acct = socket.data.account
+      if (!acct || !req || typeof req.id !== 'string' || !req.id) return
+      if (characters.save(acct.id, templateFromRoomCharacter(req))) emitCharacterViews(acct.id)
+    })
+
+    // ===== 방별 독립 시트 — 라이브러리 템플릿을 복제하거나 방 복제본을 제거. =====
     on('room:char:add', (req) => {
       const roomId = socket.data.roomId
       if (!roomId || !req || typeof req.charId !== 'string' || !req.charId) return
-      const ids = store.addRoomChar(roomId, playerId, req.charId.slice(0, 200))
-      if (ids) io.to('user:' + playerId).emit('room:char:list', { playerId, charIds: ids })
+      const charId = req.charId.slice(0, 200)
+      const template = characters.get(playerId, charId)
+      if (template && !store.getRoomCharacter(roomId, playerId, charId)) {
+        store.saveRoomCharacter(roomId, playerId, template)
+      }
+      const ids = store.addRoomChar(roomId, playerId, charId)
+      if (ids) emitRoomCharacterList(roomId, playerId)
+      emitCharacterViews(playerId, socket.id)
     })
     on('room:char:remove', (req) => {
       const roomId = socket.data.roomId
       if (!roomId || !req || typeof req.charId !== 'string') return
       const ids = store.removeRoomChar(roomId, playerId, req.charId)
-      if (ids) io.to('user:' + playerId).emit('room:char:list', { playerId, charIds: ids })
+      if (ids) emitRoomCharacterList(roomId, playerId)
+      emitCharacterViews(playerId)
     })
 
-    // ===== GM 시트 지급 — GM 이 만든 시트를 대상 플레이어 계정으로 복사 + 그 방 멤버십에 추가. =====
+    // ===== GM 시트 지급 — GM 시트를 대상 플레이어의 방 복제본으로 지급. =====
     on('room:char:grant', (req) => {
       const roomId = socket.data.roomId
       if (
@@ -4611,14 +4693,10 @@ export function createRelay(opts?: {
       const target = req.targetPlayerId
       if (!room.participants.has(target)) return // 같은 방 참가자만
       const newId = randomUUID()
-      const record = { ...(req.record as Record<string, unknown>), id: newId } // 새 id 로 소유권 이전 복사
-      if (!characters.save(target, record)) return
-      store.addRoomChar(roomId, target, newId)
-      io.to('acct:' + target).emit('char:library', characters.list(target)) // 대상 라이브러리 갱신
-      io.to('user:' + target).emit('room:char:list', {
-        playerId: target,
-        charIds: store.roomCharsFor(roomId, target)
-      })
+      const record = { ...(req.record as Record<string, unknown>), id: newId } as CharacterRecord
+      if (!store.saveRoomCharacter(roomId, target, record)) return
+      emitCharacterViews(target)
+      emitRoomCharacterList(roomId, target)
       // 대상에게만 받음 알림(시스템 메시지 · 히스토리 미저장).
       const sys = {
         id: randomUUID(),
@@ -4630,7 +4708,7 @@ export function createRelay(opts?: {
       io.to('user:' + target).emit('chat:new', sys)
     })
 
-    // GM 시트 지급 취소·빼앗기 — 대상의 계정·방에서 해당 시트 회수(삭제).
+    // GM 시트 지급 취소·빼앗기 — 대상의 방 복제본을 GM 의 방 복제본으로 이전.
     on('room:char:revoke', (req) => {
       const roomId = socket.data.roomId
       if (
@@ -4648,31 +4726,25 @@ export function createRelay(opts?: {
       const target = req.targetPlayerId
       // 같은 방 참가자 또는 세션 멤버 — 부재 멤버 시트도 열람이 열려 있으므로 회수도 같은 경계로(무음 무시 방지).
       if (!room.participants.has(target) && !room.members.has(target)) return
-      // 삭제가 아니라 GM 라이브러리로 회수(이전). 대상 레코드를 GM 계정으로 복사 + GM 방 멤버십에 추가.
+      prepareRoomCharacters(roomId, target)
+      // 대상 방 복제본을 GM 의 방 복제본으로 회수한다. 라이브러리는 건드리지 않는다.
       const gmAcct = socket.data.account
       if (gmAcct) {
-        const record = characters.get(target, req.charId)
+        const record = store.getRoomCharacter(roomId, target, req.charId)
         if (record) {
-          characters.save(gmAcct.id, record) // 같은 id 유지(소유권을 GM 으로 이전)
-          store.addRoomChar(roomId, gmAcct.id, req.charId)
-          io.to('acct:' + gmAcct.id).emit('char:library', characters.list(gmAcct.id)) // GM 라이브러리에 추가 반영
-          io.to('user:' + gmAcct.id).emit('room:char:list', {
-            playerId: gmAcct.id,
-            charIds: store.roomCharsFor(roomId, gmAcct.id)
-          })
+          const gmRecord = { ...record, id: randomUUID() }
+          store.saveRoomCharacter(roomId, gmAcct.id, gmRecord)
+          emitCharacterViews(gmAcct.id)
+          emitRoomCharacterList(roomId, gmAcct.id)
         }
       }
       // 대상 계정/방에서 제거(권한 회수).
       store.removeRoomChar(roomId, target, req.charId)
-      characters.remove(target, req.charId)
-      io.to('acct:' + target).emit('char:library', characters.list(target)) // 대상 라이브러리 갱신(계정 기준 — 어디 있든 안전)
+      emitCharacterViews(target)
       // 방 기준 푸시(시트 멤버십·통지)는 이 방에 재실 중일 때만 — 부재 대상이 '다른 방'에 온라인이면
       // 이 방 기준 목록/통지가 그 방 화면을 오염시킨다. 부재자는 다음 입장 스냅샷이 올바른 목록을 준다.
       if (room.participants.has(target)) {
-        io.to('user:' + target).emit('room:char:list', {
-          playerId: target,
-          charIds: store.roomCharsFor(roomId, target)
-        })
+        emitRoomCharacterList(roomId, target)
         // 회수 통지(대상에게).
         const sys = {
           id: randomUUID(),
@@ -4683,8 +4755,7 @@ export function createRelay(opts?: {
         }
         io.to('user:' + target).emit('chat:new', sys)
       }
-      // 요청 GM 의 열람 데이터 갱신(대상 전체 시트).
-      socket.emit('sheet:data', { playerId: target, characters: characters.list(target) })
+      socket.emit('sheet:data', { playerId: target, characters: store.roomCharactersFor(roomId, target) })
     })
 
     // ===== GM 전용 시트 열람 =====
@@ -4700,8 +4771,8 @@ export function createRelay(opts?: {
       const target = req.playerId
       // 같은 방 참가자 또는 세션 멤버(입장 이력 계정) — 부재 PL 의 시트도 스탠딩 배치용으로 열람 가능.
       if (!room.participants.has(target) && !room.members.has(target)) return
-      // GM 은 대상 참가자의 전체 캐릭터 시트를 열람(방 멤버십 필터 없음 — 직접 만들어 방에 안 넣은 시트도 포함).
-      socket.emit('sheet:data', { playerId: target, characters: characters.list(target) })
+      prepareRoomCharacters(roomId, target)
+      socket.emit('sheet:data', { playerId: target, characters: store.roomCharactersFor(roomId, target) })
     })
 
     // ===== 부재 멤버 목록 (GM 전용) =====
@@ -4721,7 +4792,7 @@ export function createRelay(opts?: {
     })
 
     // ===== GM 전용 시트 편집 =====
-    // GM 이 같은 방 참가자의 시트를 수정 → 대상 계정에 저장 + 대상 본인에게 sheet:push(로컬 병합) + GM 열람 데이터 갱신.
+    // GM 이 같은 방 참가자의 방 시트를 수정 → 대상 본인에게 sheet:push + GM 열람 데이터 갱신.
     on('sheet:edit', (req) => {
       const roomId = socket.data.roomId
       if (!roomId || !req || typeof req.targetPlayerId !== 'string') return
@@ -4734,12 +4805,12 @@ export function createRelay(opts?: {
       const target = req.targetPlayerId
       // 같은 방 참가자 또는 세션 멤버 — 부재 멤버 시트도 열람이 열려 있으므로 편집이 무음 유실되지 않게 같은 경계로.
       if (!room.participants.has(target) && !room.members.has(target)) return
-      // 대상 계정에 저장(덮어쓰기) — 오프라인이어도 영속(재접속 시 char:library 로 반영).
-      const saved = characters.save(target, char)
+      const saved = store.saveRoomCharacter(roomId, target, char)
       if (!saved) return
-      // 대상 본인에게 푸시(자기 로컬 캐릭터 병합) + GM 열람 데이터 갱신(전체 시트).
-      io.to('user:' + target).emit('sheet:push', { character: saved })
-      socket.emit('sheet:data', { playerId: target, characters: characters.list(target) })
+      // 대상 본인에게 푸시(자기 로컬 캐릭터 병합) + GM 열람 데이터 갱신.
+      pushRoomCharacter(roomId, target, saved)
+      emitCharacterViews(target, socket.id)
+      socket.emit('sheet:data', { playerId: target, characters: store.roomCharactersFor(roomId, target) })
     })
 
     // ===== 핸드아웃 (GM 전용) =====

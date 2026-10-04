@@ -722,7 +722,7 @@ export interface RoomState {
   cutInImages?: Partial<Record<SuccessLevel, string>>
   /** ~문장~ 행동지문 색(GM 설정·전원 동기화). 빈값이면 글자색 따름(mk-dim-color CSS 변수). */
   dimColor?: string
-  /** 요청자의 이 방 캐릭터 시트 멤버십 — 이 charId 들만 방에서 보임(라이브러리에서 가져온 것). */
+  /** 요청자의 이 방 독립 캐릭터 시트 id 목록. */
   charRoomIds: string[]
   /** 이 뷰어가 이미 고른 GM 선택지(메시지 id → 옵션 id). 재입장해도 잠금이 되살아난다.
    *  값이 빈 문자열이면 '고르긴 했으나 무엇인지 모름'(구버전 저장본). 구버전 서버 응답엔 없음. */
@@ -1056,19 +1056,21 @@ export interface ClientToServerEvents {
   // 스탠딩을 뺀 정체성만 즉시 반영(업로드 대기 없음) — 갈아입자마자 친 말이 옛 캐릭터로 찍히지 않게.
   'char:identity': (req: CharIdentityReq) => void
   'char:expr': (req: { index: number }) => void
-  // 캐릭터 시트 영속 (인증 계정 전용). 시트 전체를 계정에 저장/삭제.
+  // 캐릭터 시트 영속. 방 안에서는 방 복제본, 방 밖에서는 라이브러리 템플릿을 저장한다.
   'char:save': (req: CharacterRecord) => void
   'char:delete': (req: { id: string }) => void
-  // 방별 시트 멤버십 — 내 라이브러리 시트를 이 방에 추가/제거. 서버가 charRooms 영속 + room:char:list 응답.
+  // 방 캐릭터를 이미지 없는 새 라이브러리 템플릿으로 명시적으로 저장.
+  'char:template:save': (req: CharacterRecord) => void
+  // 라이브러리 템플릿을 방 독립 복제본으로 추가하거나 방 복제본을 제거.
   'room:char:add': (req: { charId: string }) => void
   'room:char:remove': (req: { charId: string }) => void
-  // GM 시트 지급 — record 를 대상 플레이어 계정으로 복사 저장 + 그 방 멤버십에 추가.
+  // GM 시트 지급 — record 를 대상 플레이어의 방 독립 시트로 복사.
   'room:char:grant': (req: { targetPlayerId: string; record: CharacterRecord }) => void
-  // GM 시트 지급 취소·빼앗기 — 대상 플레이어의 계정·방에서 해당 시트를 회수(삭제).
+  // GM 시트 지급 취소·빼앗기 — 대상의 방 시트를 GM 방 시트로 이전.
   'room:char:revoke': (req: { targetPlayerId: string; charId: string }) => void
-  // GM 전용 시트 열람: 같은 방 참가자의 전체 시트를 읽기전용으로 요청. 서버가 GM·동일 방 검증 후 sheet:data 응답.
+  // GM 전용 시트 열람: 같은 방 참가자의 방 시트를 읽기전용으로 요청.
   'sheet:request': (req: { playerId: string }) => void
-  // GM 전용 시트 편집: 대상 참가자 시트를 GM 이 수정. 서버가 GM·동일 방 검증 후 대상 계정에 저장 + sheet:push 로 대상에 반영.
+  // GM 전용 시트 편집: 대상 참가자의 방 시트를 수정하고 sheet:push 로 반영.
   'sheet:edit': (req: { targetPlayerId: string; character: CharacterRecord }) => void
   // 추방 (GM 전용).
   'room:kick': (req: { playerId: string }) => void
@@ -1291,7 +1293,7 @@ export interface ServerToClientEvents {
   // 캐릭터 프레즌스 브로드캐스트.
   'char:state': (char: SharedCharacter) => void
   'char:expr': (msg: { playerId: string; index: number }) => void
-  // 캐릭터 시트 영속 — 계정의 전체 캐릭터 목록(연결 시 + 변경 시 계정 룸에 동기화).
+  // 현재 화면의 캐릭터 목록 — 라이브러리 템플릿과 입장 중인 방 복제본을 합쳐 전달.
   'char:library': (chars: CharacterRecord[]) => void
   // 관리자가 그 계정의 캐릭터를 전부 삭제 — 클라는 로컬 라이브러리를 비운다(빈 char:library 의 '시드 재업로드'와 구분).
   'char:wiped': () => void
