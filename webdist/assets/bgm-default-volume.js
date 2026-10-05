@@ -1,5 +1,5 @@
 (() => {
-  const DEFAULT_VOLUME = 0.2
+  const DEFAULT_VOLUME = 0.5
   const LEGACY_DEFAULT_VOLUME = 0.1
   const CLIENT_ENTRY_URL = '/assets/index-DnAfYmnE.js'
 
