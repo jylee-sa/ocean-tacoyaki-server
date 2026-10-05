@@ -3472,14 +3472,12 @@ export function createRelay(opts?: {
           res.end()
           return
         }
-        // 해시 파일명(assets/)은 불변 캐시, index.html·yt.html 등 이름 고정 파일은 항상 재검증(재배포 즉시 반영).
-        // ⚠ webRoot '상대' 경로로 판정 — 절대경로 검사면 상위 폴더명에 assets 가 있을 때 전부 불변 캐시가 된다.
-        const immutable = f.rel.startsWith(`assets${sep}`)
+        // 배포 번들을 같은 파일명으로 갱신하므로 모든 웹 파일은 ETag 로 변경 여부를 재검증한다.
         const head: Record<string, string | number> = {
           'content-type': f.type,
           'content-length': f.size,
           etag: f.etag,
-          'cache-control': immutable ? 'public, max-age=31536000, immutable' : 'no-cache',
+          'cache-control': 'no-cache',
           'x-content-type-options': 'nosniff'
         }
         // 문서에만 정책을 건다(스크립트·스타일 파일에 붙여 봐야 의미가 없고, 하위 리소스는 문서 정책을 따른다).
