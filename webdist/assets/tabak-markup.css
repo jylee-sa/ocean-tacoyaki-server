@@ -1,3 +1,8 @@
+.msg-script {
+  --emas-bg: color-mix(in srgb, var(--accent) 72%, #000);
+  --emas-text: #fff;
+}
+
 .dcard-tkt .tkt-script {
   display: none;
 }

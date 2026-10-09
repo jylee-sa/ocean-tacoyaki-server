@@ -103,7 +103,7 @@ export interface Relay {
 const CHECK_STYLE =
   'display:inline-block;min-width:132px;margin:8px 0;padding:5px 40px;border:1px solid #fff;border-radius:20px;background:linear-gradient(90deg,#828282 0%,#000 100%);box-shadow:0 0 2px 1px #8f8f8f;color:#fff;font-size:12px;font-weight:600;letter-spacing:-1px;line-height:1.35;text-align:center;text-shadow:0 0 5px #000;white-space:nowrap'
 const EMAS_STYLE =
-  'display:block;background:linear-gradient(90deg,light-dark(#fff0e2,#4b3021),light-dark(#fff7ee,#3c2b22));color:light-dark(#943f00,#ffd1ac);font-style:italic;font-weight:700'
+  'display:block;padding:5px 12px;border-radius:0;background:var(--emas-bg,var(--accent-d));color:var(--emas-text,var(--on-accent));font-size:inherit;line-height:1.5;text-align:center;font-style:normal;font-weight:700'
 const HANDOUT_STYLE =
   'display:block;margin:3px 0;border:1px solid var(--line2);border-radius:8px;background:var(--bg2);text-align:left;font-style:normal'
 const HANDOUT_HEADER_STYLE =
