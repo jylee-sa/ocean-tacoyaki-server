@@ -1261,7 +1261,7 @@ export interface ServerToClientEvents {
   // 채팅 로그 전체 비움(소유자가 세션 채팅 삭제 시 입장 중인 클라가 로컬 채팅도 비움).
   'chat:clear': () => void
   // 입력 중 표시(휘발) — 발신자 제외 방 전체에 브로드캐스트. playerId 서버 스탬프. channel/groupId 로 탭별 분리.
-  'chat:typing': (req: { playerId: string; typing: boolean; channel: ChatChannel; groupId?: string }) => void
+  'chat:typing': (req: { playerId: string; typing: boolean; channel: ChatChannel; groupId?: string; roomId?: string }) => void
   // ===== DM(유저 간 다이렉트 메시지) =====
   // 새 DM 도착 — 발신자·수신자 양쪽 개인룸으로(HTTP /dm/send 가 트리거).
   'dm:new': (message: DmMessage) => void

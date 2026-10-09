@@ -63,6 +63,7 @@ import { createCommunityRoutes } from './communityRoutes'
 import { createPlazaHub, PLAZA_ID } from './plaza'
 import { createRoomPresenceHub } from './roomPresence'
 import { isFiniteCoord, clampCoord, MAX_CHAT_CHARS, isOversizedInline } from './limits'
+import { TypingPresence } from './typing'
 
 /** PNG 시그니처 검증 + IHDR 폭·높이 파싱(sharp 없이). PNG 가 아니거나 손상 시 null. 마켓 업로드 검증용. */
 function pngDimensions(bytes: Buffer): { w: number; h: number } | null {
@@ -3527,6 +3528,22 @@ export function createRelay(opts?: {
     }
   )
 
+  const typingPresence = new TypingPresence(({ roomId, playerId, channel, groupId }, typing) => {
+    const recipients = channel === 'group' && groupId
+      ? new Set(store.channelRecipients(roomId, groupId))
+      : undefined
+    const targets = recipients
+      ? [...io.sockets.sockets.values()]
+          .filter((peer) => peer.data.roomId === roomId && recipients.has(peer.data.playerId))
+          .map((peer) => peer.id)
+      : [roomId]
+    // 입력 상태는 재접속 때 과거 이벤트로 재생하지 않는다.
+    if (targets.length) io.to(targets).except('user:' + playerId).volatile.emit('chat:typing', {
+      roomId, playerId, typing, channel, ...(groupId ? { groupId } : {})
+    })
+  })
+  httpServer.on('close', () => typingPresence.dispose())
+
   // 도트타운 광장 허브 — 휘발 멀티플레이(인메모리). 100ms 틱을 광장 룸으로 송출. 종료 시 인터벌 정리.
   const plaza = createPlazaHub({
     onTick: (plazaId, tick) => io.to('plaza:' + plazaId).emit('plaza:tick', tick)
@@ -3588,13 +3605,6 @@ export function createRelay(opts?: {
   io.on('connection', (socket) => {
     // playerId/account 는 인증 미들웨어가 socket.data 에 채워둠.
     const playerId = socket.data.playerId
-    let typingStopTimer: ReturnType<typeof setTimeout> | undefined
-
-    const clearTypingStopTimer = () => {
-      if (!typingStopTimer) return
-      clearTimeout(typingStopTimer)
-      typingStopTimer = undefined
-    }
 
     /**
      * 소켓 이벤트 등록 — socket.on 대신 이 창구를 쓴다.
@@ -3740,6 +3750,7 @@ export function createRelay(opts?: {
     const leaveCurrentRoom = (): void => {
       const roomId = socket.data.roomId
       if (!roomId) return
+      typingPresence.clearSocket(socket.id)
       void socket.leave(roomId)
       // 퇴장은 계정 단위(참가자 한 칸)라, 아래 store.leave 로 이 계정이 방에서 통째로 빠진다.
       // 같은 계정의 다른 창을 그대로 두면 참가자 목록에 없는 채 화면만 켜져 있는 유령이 된다
@@ -3748,6 +3759,7 @@ export function createRelay(opts?: {
       for (const s of io.sockets.sockets.values()) {
         if (s.id !== socket.id && s.data.playerId === playerId && s.data.roomId === roomId) {
           s.emit('room:closed', '다른 창에서 이 세션을 떠났습니다.')
+          typingPresence.clearSocket(s.id)
           s.data.roomId = undefined
           void s.leave(roomId)
         }
@@ -3910,12 +3922,16 @@ export function createRelay(opts?: {
       for (const s of io.sockets.sockets.values()) {
         if (s.id !== socket.id && s.data.playerId === playerId && s.data.roomId === req.roomId) {
           s.emit('room:closed', '이 세션에서 나갔습니다.')
+          typingPresence.clearSocket(s.id)
           s.data.roomId = undefined
         }
       }
       // 지금 그 방에 입장 중이었다면 소켓도 정리(다른 기기 포함).
       void io.in('user:' + playerId).socketsLeave(req.roomId)
-      if (socket.data.roomId === req.roomId) socket.data.roomId = undefined
+      if (socket.data.roomId === req.roomId) {
+        typingPresence.clearSocket(socket.id)
+        socket.data.roomId = undefined
+      }
       roomPositions.get(req.roomId)?.delete(playerId)
       roomViews.get(req.roomId)?.delete(playerId)
       broadcastParticipants(req.roomId) // 남은 인원에게 참가자 목록 갱신
@@ -4464,37 +4480,18 @@ export function createRelay(opts?: {
       })()
     })
 
-    // ===== 입력 중 표시 (휘발 — 저장 안 함, 발신자 제외 방 전체) =====
+    // ===== 입력 중 표시 (휘발 — 소켓별 상태를 채널별로 합산) =====
     on('chat:typing', (req) => {
       const roomId = socket.data.roomId
       if (!roomId || !req) return
       const room = store.getRoom(roomId)
       if (!room || !room.participants.has(playerId)) return // 방 밖 소켓 무시
-      // 어느 탭에서 치는지 그대로 중계(클라가 활성 탭만 표시). channel 미지정이면 'main' 으로 폴백.
       const channel =
         req.channel === 'ooc' || req.channel === 'whisper' || req.channel === 'group' ? req.channel : 'main'
       const groupId = channel === 'group' && typeof req.groupId === 'string' ? req.groupId : undefined
-      const emitTyping = (typing: boolean) =>
-        socket
-          .to(roomId)
-          .emit('chat:typing', {
-            playerId,
-            typing,
-            channel,
-            ...(groupId ? { groupId } : {})
-          })
-
-      clearTypingStopTimer()
-      if (req.typing !== true) {
-        emitTyping(false)
-        return
-      }
-
-      emitTyping(true)
-      typingStopTimer = setTimeout(() => {
-        typingStopTimer = undefined
-        emitTyping(false)
-      }, 1400)
+      if (req.typing === true && channel === 'group' &&
+        (!groupId || !store.canAccessChannel(roomId, groupId, playerId))) return
+      typingPresence.update(socket.id, { roomId, playerId, channel, groupId }, req.typing === true)
     })
 
     // ===== 캐릭터 프레즌스 공유 =====
@@ -4602,7 +4599,10 @@ export function createRelay(opts?: {
       // 추방 대상 소켓의 현재 방 표식도 정리 — 남겨두면 그 소켓이 다음에 다른 방에 들어갈 때
       // 입장 핸들러의 '이전 방 자동 퇴장'이 이 stale 값으로 이 방을 건드린다(재초대된 참가자 오삭제 등).
       for (const s of io.sockets.sockets.values()) {
-        if (s.data.playerId === target && s.data.roomId === roomId) s.data.roomId = undefined
+        if (s.data.playerId === target && s.data.roomId === roomId) {
+          typingPresence.clearSocket(s.id)
+          s.data.roomId = undefined
+        }
       }
       syncPresence(target) // '세션중' 표시 해제(계정 id=playerId 운영 전제 — inSession 이 store 재검증)
       // 갱신은 방 전체, 새 코드는 "남은 참가자 개인 룸"에만(추방 대상은 participants 에서 빠져 새 코드 수신 불가 = 재입장 차단).
@@ -4668,6 +4668,8 @@ export function createRelay(opts?: {
     on('room:char:remove', (req) => {
       const roomId = socket.data.roomId
       if (!roomId || !req || typeof req.charId !== 'string') return
+      // 라이브러리 삭제도 이 요청을 먼저 보낸다. 미등록 시트는 삭제 전 목록을 되돌려 보내지 않는다.
+      if (!store.roomCharsFor(roomId, playerId).includes(req.charId)) return
       const ids = store.removeRoomChar(roomId, playerId, req.charId)
       if (ids) emitRoomCharacterList(roomId, playerId)
       emitCharacterViews(playerId)
@@ -5853,7 +5855,7 @@ export function createRelay(opts?: {
     })
 
     on('disconnect', (reason) => {
-      clearTypingStopTimer()
+      typingPresence.clearSocket(socket.id)
       log('disconnect', playerId.slice(0, 8), reason, 'sockets', io.sockets.sockets.size)
       // 광장 정리 — 이 소켓이 광장 액터의 현재 소켓이면 퇴장 브로드캐스트 예약(더 새 소켓이 이어받았으면 유지).
       plaza.disconnect(playerId, socket.id)
