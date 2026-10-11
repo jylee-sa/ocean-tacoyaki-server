@@ -3465,7 +3465,7 @@ export function createRelay(opts?: {
       if (f) {
         // 재검증이 304 로 끝나게(약검증자 — 크기+수정시각. 재배포로 파일이 바뀌면 태그도 바뀐다).
         if (req.headers['if-none-match'] === f.etag) {
-          const head304: Record<string, string> = { etag: f.etag }
+          const head304: Record<string, string> = { etag: f.etag, 'cache-control': 'no-cache' }
           // 304 에 빠진 헤더는 브라우저가 캐시본의 것을 그대로 쓴다. 정책만 바뀌고 파일은 그대로인 배포에서
           // 옛 정책이 계속 적용되지 않도록, 재검증 응답에도 같은 정책을 실어 보낸다.
           if (f.type.startsWith('text/html')) head304['content-security-policy'] = WEB_CSP

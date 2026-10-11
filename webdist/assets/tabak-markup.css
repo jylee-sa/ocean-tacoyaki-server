@@ -425,3 +425,11 @@ html[data-mobile] .msg.msg-cont {
 html[data-mobile] .gm-tool-root {
   display: none;
 }
+
+.pc-notification-setting {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}

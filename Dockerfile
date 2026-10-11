@@ -1,5 +1,5 @@
 # 타코야키 박스 릴레이 서버 — Railway/Docker 배포용.
-# 서버는 빌드 단계 없이 tsx 로 src/index.ts 를 직접 실행한다(작은 릴레이라 충분).
+# 서버는 tsx 로 src/index.ts 를 직접 실행하고 웹 파일은 빌드 때 버전 주소를 생성한다.
 # 데이터(계정·세션방·업로드 자산)는 /app/data 에 영속 → Railway 볼륨을 이 경로에 마운트할 것.
 FROM node:20-slim
 WORKDIR /app
@@ -10,6 +10,9 @@ RUN npm install --no-audit --no-fund
 
 # 서버 소스 복사(.dockerignore 가 node_modules·data 제외).
 COPY . .
+
+# 웹 파일 참조를 검사하고 같은 배포 버전의 주소로 묶는다.
+RUN npm run build:web
 
 ENV NODE_ENV=production
 # PORT 는 Railway 서비스 변수로 8787 고정(index.ts 가 process.env.PORT 사용) · 공개 도메인도 8787 로 연결.

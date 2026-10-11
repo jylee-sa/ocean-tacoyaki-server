@@ -183,18 +183,17 @@
   }
 
   function replaceRoleNames(text, names) {
-    return [['KPC', names.kpc], ['PC', names.pc]].reduce((result, [token, name]) => {
-      if (!name.trim()) return result
-      const withParticle = new RegExp(`\\b${token}(은|는|이|가|을|를|과|와|으로|로)`, 'g')
-      const plainToken = new RegExp(`\\b${token}\\b`, 'g')
-      return result.replace(withParticle, (_, particle) => `${name}${matchParticle(name, particle)}`).replace(plainToken, name)
-    }, text)
+    return text.replace(/(\bKPC\b|\bPC\b|탐사자)(은|는|이|가|을|를|과|와|으로|로)?/g, (match, role, particle) => {
+      const name = role === 'KPC' ? names.kpc : names.pc
+      if (!name.trim()) return match
+      return `${name}${particle ? matchParticle(name, particle) : ''}`
+    })
   }
 
   function openScriptModal() {
     const windowEl = document.createElement('section')
     windowEl.className = 'gm-script-window'
-    windowEl.innerHTML = '<div class="gm-script-title" data-drag-handle><div><h3>문장 나누기</h3><p>PDF에서 복사한 줄바꿈을 정리한 뒤, 한 문장씩 직접 전송합니다.</p></div><button type="button" class="gm-tool-close" data-close>×</button></div><div class="gm-script-body"><div class="gm-script-names"><label>KPC명<input type="text" maxlength="40" data-kpc autocomplete="off" placeholder="예: 하즈키"></label><label>PC명<input type="text" maxlength="40" data-pc autocomplete="off" placeholder="예: 유진"></label></div><label class="gm-script-option"><input type="checkbox" data-normalize checked> PDF 줄바꿈 정리</label><textarea data-source rows="7" placeholder="긴 스크립트를 붙여 넣으세요. KPC와 PC는 위 이름으로 치환되고, 조사도 자동으로 맞춥니다."></textarea><div class="gm-check-actions"><button type="button" class="btn sm" data-close>취소</button><button type="button" class="btn sm" data-reset>초기화</button><button type="button" class="btn sm" data-split>문장 나누기</button></div><section class="gm-script-result" hidden><div class="gm-script-result-head"><strong>문장 목록</strong><span data-count></span></div><div data-sentences></div><div class="gm-check-actions"><button type="button" class="btn sm pri" data-send-next></button></div></section></div>'
+    windowEl.innerHTML = '<div class="gm-script-title" data-drag-handle><div><h3>문장 나누기</h3><p>PDF에서 복사한 줄바꿈을 정리한 뒤, 한 문장씩 직접 전송합니다.</p></div><button type="button" class="gm-tool-close" data-close>×</button></div><div class="gm-script-body"><div class="gm-script-names"><label>KPC명<input type="text" maxlength="40" data-kpc autocomplete="off" placeholder="예: 하즈키"></label><label>PC / 탐사자명<input type="text" maxlength="40" data-pc autocomplete="off" placeholder="예: 유진"></label></div><label class="gm-script-option"><input type="checkbox" data-normalize checked> PDF 줄바꿈 정리</label><textarea data-source rows="7" placeholder="긴 스크립트를 붙여 넣으세요. KPC는 KPC명으로, PC와 탐사자는 PC / 탐사자명으로 치환되고, 조사도 자동으로 맞춥니다."></textarea><div class="gm-check-actions"><button type="button" class="btn sm" data-close>취소</button><button type="button" class="btn sm" data-reset>초기화</button><button type="button" class="btn sm" data-split>문장 나누기</button></div><section class="gm-script-result" hidden><div class="gm-script-result-head"><strong>문장 목록</strong><span data-count></span></div><div data-sentences></div><div class="gm-check-actions"><button type="button" class="btn sm pri" data-send-next></button></div></section></div>'
     const source = windowEl.querySelector('[data-source]')
     const kpc = windowEl.querySelector('[data-kpc]')
     const pc = windowEl.querySelector('[data-pc]')

@@ -8,7 +8,10 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "check:web": "node scripts/check-web-assets.mjs",
+    "build:web": "node scripts/build-web-release.mjs",
+    "test:web": "node --test scripts/web-assets.test.mjs scripts/desktop-notifications.test.mjs"
   },
   "dependencies": {
     "socket.io": "^4.8.1"
