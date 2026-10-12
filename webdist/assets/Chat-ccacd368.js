@@ -85,8 +85,11 @@ ${y} .msg-actions,${y} .msg-edit,${y} .chat-resizer,${y} .typing-ind,${y} .log-m
 ${y} .tkbx-head{width:var(--chat-w,346px);max-width:100%;margin:0 auto 12px;text-align:center}
 ${y} .tkbx-head b{display:block;font-size:19px;color:var(--accent,#7c9cff)}
 ${y} .tkbx-head span{font-size:11px;color:var(--tx3,#8a90a0)}
-${y} .tkbx-foot{width:var(--chat-w,346px);max-width:100%;margin:14px auto 0;padding-top:8px;border-top:1px solid var(--line,rgba(127,127,127,.3));color:var(--tx3,#888);font-size:10px;text-align:center}`,W=i?Xn(i.uid,i.tabs,a.outerHTML):a.outerHTML,x=[D.theme?` data-theme="${Ye(D.theme)}"`:"",D.accent?` data-accent="${Ye(D.accent)}"`:""].join(""),j=`${Vi()};--chat-w:${N}px`;return`<div id="${Ye(B)}"${x} style="${Ye(j)}">
-<style>${v}${f}${M}</style>
+${y} .tkbx-foot{width:var(--chat-w,346px);max-width:100%;margin:14px auto 0;padding-top:8px;border-top:1px solid var(--line,rgba(127,127,127,.3));color:var(--tx3,#888);font-size:10px;text-align:center}`,W=i?Xn(i.uid,i.tabs,a.outerHTML):a.outerHTML,x=[D.theme?` data-theme="${Ye(D.theme)}"`:"",D.accent?` data-accent="${Ye(D.accent)}"`:""].join(""),j=`${Vi()};--chat-w:${N}px`,F=`
+${y} .log,${y} .tkbx-head,${y} .tkbx-foot,${y} .tkbx-tabs{width:100%;max-width:100%}
+${y} .dcard,${y} .madcard,${y} .choice-card,${y} .luck-card,${y} .luck-result,${y} .deck-draw-card{width:var(--chat-w);max-width:100%;align-self:flex-start}
+`;return`<div id="${Ye(B)}"${x} style="${Ye(j)}">
+<style>${v}${f}${M}${F}</style>
 <div class="tkbx-head"><b>${Ye(s.title)}</b><span>${vs(s.exportedAt)}</span></div>
 ${W}
 <div class="tkbx-foot">${Ye(s.title)} \xB7 ${vs(s.exportedAt)} \xB7 \uCD1D ${C}\uAC74</div>
