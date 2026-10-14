@@ -426,6 +426,36 @@ html[data-mobile] .gm-tool-root {
   display: none;
 }
 
+.topbar {
+  min-width: 0;
+}
+
+.topbar > :not(.rn) {
+  flex-shrink: 0;
+}
+
+.topbar > .rn {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.topbar > .rn > svg {
+  flex: none;
+}
+
+.topbar .rn-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+html[data-mobile] .topbar > .rn {
+  flex: 0 0 auto;
+  max-width: 100%;
+}
+
 .pc-notification-setting {
   display: flex;
   align-items: center;
