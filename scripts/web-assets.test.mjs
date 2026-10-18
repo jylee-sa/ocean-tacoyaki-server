@@ -60,6 +60,18 @@ test('VN overlay stays hidden before dialogue despite an active character with a
   assert.equal(page.render(), null)
 })
 
+test('empty speech and narration never leave a blank VN overlay', () => {
+  const page = vnFixture()
+  page.chat.messages = [
+    { id: 'empty', channel: 'main', kind: 'speech', text: '' },
+    { id: 'spaces', channel: 'main', kind: 'narration', text: ' \n\t ' },
+    { id: 'missing', channel: 'main', kind: 'speech' }
+  ]
+  assert.equal(page.render(), null)
+  const stage = page.render(false)
+  assert.ok(!stage.props.children.some((child) => child?.props?.className === 'vn-box'))
+})
+
 for (const kind of ['speech', 'narration']) {
   test(`VN overlay shows ${kind} after an empty session and hides when history clears`, () => {
     const page = vnFixture()
@@ -84,7 +96,7 @@ test('full VN view keeps its stage and active standing before dialogue', () => {
   const view = page.render(false)
   assert.equal(view.props.className, 'center-vn')
   assert.equal(view.props.children[2].props.children[1].props.src, 'active.png')
-  assert.ok(view.props.children.some((child) => child?.props?.className === 'vn-box'))
+  assert.ok(!view.props.children.some((child) => child?.props?.className === 'vn-box'))
 })
 
 function preload(source = main, existing = []) {
