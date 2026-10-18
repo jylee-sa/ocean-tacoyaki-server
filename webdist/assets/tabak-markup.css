@@ -234,6 +234,12 @@ html[data-mobile] .msg.msg-cont {
   margin-top: 5px;
 }
 
+.tabak-gm-script-icon {
+  font-size: 13px;
+  line-height: 1;
+  vertical-align: middle;
+}
+
 .tabak-gm-script-toggle.on {
   background: var(--accent);
   border-color: var(--accent);

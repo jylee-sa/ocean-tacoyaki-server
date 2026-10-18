@@ -4,7 +4,7 @@
 .cin-identity,.cin-roll-options{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .cin-identity{position:relative}
 .chat-standing-control{display:contents}
-.chat-standing-toggle.on,.chat-script-toggle.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+.chat-standing-toggle.on{background:var(--accent);color:#fff;border-color:var(--accent)}
 .chat-standing-popover{position:absolute;left:0;bottom:calc(100% + 8px);z-index:31;box-sizing:border-box;width:min(290px,100%);padding:10px;background:var(--bg2);border:1px solid var(--line2);border-radius:10px;box-shadow:var(--shadow)}
 .chat-standing-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;font-size:11px;font-weight:700}
 .chat-standing-caption{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-weight:400}

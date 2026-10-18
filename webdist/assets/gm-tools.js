@@ -106,13 +106,18 @@
       button.id = 'tabak-gm-script-toggle'
       button.type = 'button'
       button.className = 'q tabak-gm-script-toggle'
+      const icon = document.createElement('span')
+      icon.className = 'material-symbols-outlined tabak-gm-script-icon'
+      icon.setAttribute('aria-hidden', 'true')
+      icon.textContent = 'description'
+      button.append(icon, document.createTextNode(' 스크립트'))
       button.addEventListener('click', toggleDescriptionMode)
       secretButton.after(button)
     }
     button.classList.toggle('on', scriptActive)
-    const label = scriptActive ? '스크립트 해제' : '스크립트'
-    const title = scriptActive ? '스크립트(/desc) 모드 해제' : '스크립트(/desc) 모드 켜기'
-    if (button.textContent !== label) button.textContent = label
+    const pressed = String(scriptActive)
+    if (button.getAttribute('aria-pressed') !== pressed) button.setAttribute('aria-pressed', pressed)
+    const title = '/desc 명령어로 전송'
     if (button.title !== title) button.title = title
   }
 
