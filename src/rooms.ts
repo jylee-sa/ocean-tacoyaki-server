@@ -1390,7 +1390,7 @@ function roomFromFile(data: unknown): Room | null {
   }
 }
 
-/** GM 선택지 정규화(로드용) — 메시지 id·옵션 필수, 개수·길이 캡. 구버전 저장본엔 없음(undefined). */
+/** GM 선택지 복원 — 카드 보관 수와 항목별 문자열 길이를 제한한다. */
 function coerceChoices(
   v: unknown
 ): Map<string, { options: { id: string; label: string; script?: string }[]; responders: Map<string, string> }> | undefined {
@@ -1401,7 +1401,6 @@ function coerceChoices(
     if (!raw || typeof raw !== 'object' || typeof raw.mid !== 'string' || !raw.mid) continue
     const options: { id: string; label: string; script?: string }[] = []
     for (const o of Array.isArray(raw.options) ? (raw.options as Record<string, unknown>[]) : []) {
-      if (options.length >= 10) break
       if (!o || typeof o.id !== 'string' || !o.id || typeof o.label !== 'string') continue
       options.push({
         id: o.id.slice(0, 40),

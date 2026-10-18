@@ -4307,7 +4307,6 @@ export function createRelay(opts?: {
       const opts = Array.isArray(req.options) ? req.options : []
       const stored = opts
         .filter((o) => o && typeof o.label === 'string' && o.label.trim())
-        .slice(0, 10)
         .map((o, i) => ({
           id: typeof o.id === 'string' && o.id ? o.id : `o${i}`,
           label: o.label.slice(0, 200),
