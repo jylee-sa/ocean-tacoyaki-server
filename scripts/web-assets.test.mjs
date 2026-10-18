@@ -12,6 +12,81 @@ const webRoot = resolve('webdist')
 const main = await readFile(join(webRoot, 'assets/index-DnAfYmnE.js'), 'utf8')
 const room = await readFile(join(webRoot, 'assets/Room-c7de2ebc.js'), 'utf8')
 
+function vnFixture() {
+  const start = room.indexOf('function ji({overlay:')
+  const end = room.indexOf('var ms={}', start)
+  assert.ok(start >= 0 && end > start)
+  const chat = { messages: [], historyEpoch: 0 }
+  const character = { id: 'active', info: { name: '활성 캐릭터' }, portrait: { standings: ['active.png'] } }
+  const select = (state) => (selector) => selector(state)
+  const jsx = (type, props) => ({ type, props })
+  let hooks = 0
+  const context = {
+    Nn: select(chat),
+    we: select({ roster: {}, participants: [] }),
+    _r: select({ characters: { active: character }, speakingAs: 'active' }),
+    oo: (state) => state.characters.active,
+    T: select({ maps: {}, activeMapId: 'map' }),
+    me: select({ vnCastMax: 1, vnFontScale: 1 }),
+    p: {
+      useState(value) { hooks++; return [value, () => {}] },
+      useRef(value) { hooks++; return { current: value } },
+      useMemo(compute) { hooks++; return compute() },
+      useEffect() { hooks++ }
+    },
+    t: { jsx, jsxs: jsx, Fragment: 'fragment' },
+    Dr: (value) => ({ name: value.info.name, standings: value.portrait.standings }),
+    Bi: () => false,
+    zo: 'message-text',
+    ki: 3
+  }
+  const render = vm.runInNewContext(room.slice(start, end) + ';ji', context)
+  return {
+    chat,
+    render(overlay = true) { hooks = 0; return render({ overlay }) },
+    hookCount: () => hooks
+  }
+}
+
+test('VN overlay stays hidden before dialogue despite an active character with a standing', () => {
+  const page = vnFixture()
+  assert.equal(page.render(), null)
+  page.chat.messages = [
+    { id: 'system', channel: 'main', kind: 'system', text: '세션 시작' },
+    { id: 'ooc', channel: 'ooc', kind: 'speech', text: '잡담' },
+    { id: 'secret', channel: 'main', kind: 'speech', text: '비밀', secret: true },
+    { id: 'private', channel: 'main', kind: 'speech', text: '귓속말', to: ['other'] }
+  ]
+  assert.equal(page.render(), null)
+})
+
+for (const kind of ['speech', 'narration']) {
+  test(`VN overlay shows ${kind} after an empty session and hides when history clears`, () => {
+    const page = vnFixture()
+    assert.equal(page.render(), null)
+    const emptyHooks = page.hookCount()
+    page.chat.messages = [{ id: 'first', channel: 'main', kind, author: '발화자', text: '첫 대사' }]
+    const view = page.render()
+    assert.equal(view.props.className, 'center-vn overlay')
+    const box = view.props.children.find((child) => child?.props?.className === 'vn-box')
+    assert.equal(box.props.children[0].props.children, '발화자')
+    assert.equal(box.props.children[1].props.children[0].props.src, '첫 대사')
+    assert.equal(page.hookCount(), emptyHooks)
+    page.chat.messages = []
+    page.chat.historyEpoch++
+    assert.equal(page.render(), null)
+    assert.equal(page.hookCount(), emptyHooks)
+  })
+}
+
+test('full VN view keeps its stage and active standing before dialogue', () => {
+  const page = vnFixture()
+  const view = page.render(false)
+  assert.equal(view.props.className, 'center-vn')
+  assert.equal(view.props.children[2].props.children[1].props.src, 'active.png')
+  assert.ok(view.props.children.some((child) => child?.props?.className === 'vn-box'))
+})
+
 function preload(source = main, existing = []) {
   const links = [...existing]
   const requested = []
