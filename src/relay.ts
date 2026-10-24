@@ -275,6 +275,12 @@ function presenceHeadshot(
   return ch.headshots?.[i] || ch.headshot
 }
 
+function presenceStanding(ch: SharedCharacter | undefined): string | null {
+  if (!ch || ch.visibility === 'hidden' || !ch.standings.length) return null
+  const index = Math.max(0, Math.min(ch.currentExpression ?? 0, ch.standings.length - 1))
+  return ch.standings[index] || null
+}
+
 /**
  * 비밀 메시지(비밀 굴림·비밀 발화) 수신 대상 개인 룸 — 보낸 사람 + 그 방의 모든 GM.
  * rooms.canSeeMessage(히스토리 열람 규칙)와 같은 집합이어야 한다 — 어긋나면 재입장 뒤에야 보이는 메시지가 생긴다.
@@ -4091,6 +4097,11 @@ export function createRelay(opts?: {
         : {
             ...base,
             kind: isScript ? 'script' : req.narration ? 'narration' : 'speech',
+            ...(!isScript ? {
+              charId: identity?.charId,
+              standing: presenceStanding(identity),
+              standingHeight: identity?.standingHeight
+            } : {}),
             // 인라인 굴림 [[1d100]] 을 서버 권위로 1회 해석 → 전원 같은 숫자. 채팅·스크립트 공통.
             text: resolveInlineRolls(raw.trim())
           }

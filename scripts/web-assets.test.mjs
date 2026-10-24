@@ -7,7 +7,7 @@ import vm from 'node:vm'
 import ts from 'typescript'
 import { buildWebRelease } from './build-web-release.mjs'
 import { collectFiles, validateWebAssets } from './check-web-assets.mjs'
-import { vnSpeakerKey, isVnStandingHidden } from '../webdist/assets/vn-standing-state.js'
+import { vnSpeakerKey, isVnStandingHidden, resolveVnStanding } from '../webdist/assets/vn-standing-state.js'
 
 const webRoot = resolve('webdist')
 const main = await readFile(join(webRoot, 'assets/index-DnAfYmnE.js'), 'utf8')
@@ -23,7 +23,7 @@ function vnFixture() {
   const jsx = (type, props) => ({ type, props })
   let hooks = 0
   const context = {
-    vnSpeakerKey, isVnStandingHidden, VnStandingControls: "standing-controls",
+    vnSpeakerKey, isVnStandingHidden, resolveVnStanding, VnStandingControls: "standing-controls", VnStandingLayer: "standing-layer",
     Nn: select(chat),
     we: select({ roster: {}, participants: [] }),
     _r: select({ characters: { active: character }, speakingAs: 'active' }),

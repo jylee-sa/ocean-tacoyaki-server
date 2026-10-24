@@ -52,6 +52,10 @@ export interface ChatMessage {
   channel: ChatChannel
   kind: MessageKind
   author?: string
+  /** 발화 당시 캐릭터와 스탠딩. null은 당시 표시할 스탠딩이 없었음을 뜻한다. */
+  charId?: string
+  standing?: string | null
+  standingHeight?: number
   /** 발화자 playerId (서버 스탬프 · 캐릭터/아바타 매칭용). system 메시지는 없음. */
   playerId?: string
   color?: string
