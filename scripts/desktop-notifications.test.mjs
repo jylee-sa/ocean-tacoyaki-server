@@ -47,10 +47,10 @@ function fixture(t) {
     advance: (milliseconds) => { now += milliseconds } }
 }
 
-test('background messages show a generic notification without exposing session or chat content', (t) => {
+test('background messages show the session title without exposing chat content', (t) => {
   const f = fixture(t)
   assert.equal(f.controller.receive(f.message()), true)
-  assert.equal(f.notifications[0].title, '타코야키 박스')
+  assert.equal(f.notifications[0].title, f.context().roomTitle)
   assert.equal(f.notifications[0].options.body, '새로운 메시지가 도착했습니다.')
   assert.equal(f.notifications[0].options.tag, 'tacoyaki-session:room')
   assert.equal(f.notifications[0].options.silent, true)

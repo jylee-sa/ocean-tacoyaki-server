@@ -75,7 +75,8 @@ export function createDesktopNotifications({ getContext, getEnabled, window: hos
     try {
       close()
       const roomId = context.roomId
-      const item = new NotificationAPI(APP_TITLE, {
+      const title = typeof context.roomTitle === 'string' ? context.roomTitle.trim() : ''
+      const item = new NotificationAPI(title || APP_TITLE, {
         body: '새로운 메시지가 도착했습니다.',
         tag: `tacoyaki-session:${roomId}`,
         silent: true

@@ -183,6 +183,7 @@ export interface Room {
   locked?: boolean
   luckEnabled?: boolean // 행운 깎기(CoC7 하우스룰) 사용 여부 — GM 토글·전원 동기화·영속. 미설정=사용(기본).
   vnOverlay?: boolean // 일반 맵 위 VN 오버레이(대사창+발화자 스탠딩) 표시 — GM 토글·전원 동기화·영속. 미설정=꺼짐.
+  vnStandingHidden?: Record<string, string>
   /**
    * GM 의 귓속말 열람. 켜 두면 그 뒤로 오가는 1:1 귓속말이 GM 에게도 전달된다 — GM 토글·전원 동기화·영속.
    * 미설정=꺼짐. 열림 여부는 방 설정이 아니라 말마다 찍히는 각인(ChatMessage.gmVisible)이 정하므로,
@@ -1259,6 +1260,7 @@ function roomToFile(room: Room): Record<string, unknown> {
     luckEnabled: room.luckEnabled, // 행운 깎기 사용 여부
     locked: room.locked, // 입실 잠금(공사중)
     vnOverlay: room.vnOverlay, // 일반 맵 VN 오버레이 표시 여부
+    vnStandingHidden: room.vnStandingHidden,
     gmSeeWhispers: room.gmSeeWhispers, // GM 귓속말 열람 여부
     bgm: room.bgm,
     channels: [...room.channels.values()],
@@ -1373,6 +1375,7 @@ function roomFromFile(data: unknown): Room | null {
     locked: o.locked === true ? true : undefined, // 입실 잠금(공사중)
     luckEnabled: typeof o.luckEnabled === 'boolean' ? o.luckEnabled : undefined, // 행운 깎기 사용 여부(미설정=기본 사용)
     vnOverlay: typeof o.vnOverlay === 'boolean' ? o.vnOverlay : undefined, // VN 오버레이 표시 여부(미설정=꺼짐)
+    vnStandingHidden: coerceVnStandingHidden(o.vnStandingHidden, messages),
     gmSeeWhispers: o.gmSeeWhispers === true ? true : undefined, // GM 귓속말 열람 여부(미설정=꺼짐)
     bgm: coerceLoadedBgmList(o.bgm),
     combat: null, // 전투는 in-memory(비영속) — 재시작 시 초기화
@@ -1388,6 +1391,16 @@ function roomFromFile(data: unknown): Room | null {
     createdAt: typeof o.createdAt === 'number' ? o.createdAt : now,
     lastActivityAt: typeof o.lastActivityAt === 'number' ? o.lastActivityAt : now
   }
+}
+
+function coerceVnStandingHidden(value: unknown, messages: ChatMessage[]): Record<string, string> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const hidden = value as Record<string, unknown>
+  const entries = messages
+    .filter((message) => message.channel === 'main' && !message.secret && !message.to)
+    .map((message) => [JSON.stringify([message.playerId ?? '', message.author ?? message.id]), message.id])
+    .filter(([key, id]) => hidden[key] === id)
+  return entries.length ? Object.fromEntries(entries) : undefined
 }
 
 /** GM 선택지 복원 — 카드 보관 수와 항목별 문자열 길이를 제한한다. */
@@ -2839,6 +2852,24 @@ export class RoomStore {
     room.vnOverlay = enabled
     room.lastActivityAt = Date.now()
     return { ok: true, enabled }
+  }
+
+  hideVnStandings(roomId: string, messageIds: unknown, hide = true): Record<string, string> | undefined {
+    const room = this.rooms.get(roomId)
+    if (!room || !Array.isArray(messageIds)) return undefined
+    const ids = new Set(messageIds.filter((id): id is string => typeof id === 'string'))
+    const messages = room.messages.filter((message) => ids.has(message.id) && message.channel === 'main' &&
+      (message.kind === 'speech' || message.kind === 'narration') && !message.secret && !message.to && !message.deleted)
+    if (!messages.length) return undefined
+    const hidden = coerceVnStandingHidden(room.vnStandingHidden, room.messages) ?? {}
+    for (const message of messages) {
+      const key = JSON.stringify([message.playerId ?? '', message.author ?? message.id])
+      if (hide) hidden[key] = message.id
+      else if (hidden[key] === message.id) delete hidden[key]
+    }
+    room.vnStandingHidden = hidden
+    room.lastActivityAt = Date.now()
+    return hidden
   }
 
   /**
@@ -4661,6 +4692,7 @@ export class RoomStore {
       locked: room.locked, // 입실 잠금(공사중)
       luckEnabled: room.luckEnabled, // 행운 깎기 사용 여부
       vnOverlay: room.vnOverlay, // VN 오버레이 표시 여부
+      vnStandingHidden: room.vnStandingHidden,
       gmSeeWhispers: room.gmSeeWhispers, // GM 귓속말 열람 여부
       bgm: room.bgm,
       combat: room.combat,

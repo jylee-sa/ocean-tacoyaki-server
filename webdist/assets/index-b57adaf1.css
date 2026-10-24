@@ -12,3 +12,12 @@
 .chat-standing-commands .q{min-width:0;overflow-wrap:anywhere;text-align:left}
 .chat-standing-empty{padding:8px 0;font-size:12px;color:var(--muted)}
 @media(pointer:coarse){.chat-standing-commands{--standing-command-height:44px}}
+
+.coc-sheet .input[type=number]{box-sizing:border-box;min-width:0;padding-inline:3px}
+.coc-sheet .ostat-v .input{width:100%;padding:4px 3px;text-align:center;font-size:18px;font-weight:800}
+.coc-sheet .coc-skill-value{width:64px;text-align:right}
+.coc-sheet .oskill .val:has(.coc-skill-value){padding:2px 3px;flex-shrink:0}
+
+.vn-standing-status{margin-left:auto;white-space:nowrap}
+
+.vn-overlay-toggle{border:1px solid var(--line);border-radius:9px;background:var(--bg3)}

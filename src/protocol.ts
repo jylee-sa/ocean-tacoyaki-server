@@ -741,6 +741,8 @@ export interface RoomState {
   luckEnabled?: boolean
   /** 일반 맵 VN 오버레이(대사창+발화자 스탠딩) 표시 — GM 토글·전원 동기화. 미설정/false=꺼짐, true=켜짐. */
   vnOverlay?: boolean
+  /** GM이 내린 스탠딩의 마지막 발화 id. 같은 캐릭터가 다시 발화하면 재등장한다. */
+  vnStandingHidden?: Record<string, string>
   /** GM 귓속말 열람 — GM 토글·전원 동기화. 미설정/false=꺼짐. 켠 뒤에 오가는 귓속말만 GM 에게 열린다. */
   gmSeeWhispers?: boolean
   /** 채팅 두상 풀 — messages 의 avatarRef 가 가리키는 두상 data URL 목록(스냅샷 크기 절감). */
@@ -1089,6 +1091,7 @@ export interface ClientToServerEvents {
   'room:lock': (req: { locked: boolean }) => void
   // GM 전용: 일반 맵 VN 오버레이 표시 토글. 전원 동기화.
   'room:vnoverlay': (req: { enabled: boolean }) => void
+  'room:vnstanding:hide': (req: { messageIds: string[]; hidden?: boolean }) => void
   // GM 전용: GM 귓속말 열람 토글. 켠 뒤에 오가는 귓속말만 GM 에게 열린다(지난 말은 소급 열람 없음).
   'room:gmwhisper': (req: { enabled: boolean }) => void
   // GM 커스텀 광기표 설정(GM 전용) — 서버 정규화 후 전원 동기화.
@@ -1323,6 +1326,7 @@ export interface ServerToClientEvents {
   'room:lock': (req: { locked: boolean }) => void
   // VN 오버레이 표시 브로드캐스트 — GM 토글 시 전원 동기화.
   'room:vnoverlay': (req: { enabled: boolean }) => void
+  'room:vnstanding:hidden': (req: { roomId: string; hidden: Record<string, string> }) => void
   // GM 전용: GM 귓속말 열람 토글. 켠 뒤에 오가는 귓속말만 GM 에게 열린다(지난 말은 소급 열람 없음).
   'room:gmwhisper': (req: { enabled: boolean }) => void
   // GM 커스텀 광기표 브로드캐스트.

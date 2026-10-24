@@ -4355,6 +4355,8 @@ export function createRelay(opts?: {
           time: Date.now(),
           channel: 'main',
           kind: 'system',
+          playerId,
+          secret: true,
           text: '이미 선택했거나, 서버가 더는 들고 있지 않은 선택지입니다.'
         } satisfies ChatMessage)
         return
@@ -5075,6 +5077,13 @@ export function createRelay(opts?: {
       if (!roomId || !req) return
       const res = store.setVnOverlay(roomId, req.enabled === true)
       if (res.ok) io.to(roomId).emit('room:vnoverlay', { enabled: res.enabled })
+    })
+
+    on('room:vnstanding:hide', (req) => {
+      const roomId = gmRoomId()
+      if (!roomId || !req) return
+      const hidden = store.hideVnStandings(roomId, req.messageIds, req.hidden !== false)
+      if (hidden) io.to(roomId).emit('room:vnstanding:hidden', { roomId, hidden })
     })
 
     // GM 귓속말 열람(GM 전용) — 전원 동기화. 참가자 모두에게 알리는 것은 숨기지 않기 위해서다.
