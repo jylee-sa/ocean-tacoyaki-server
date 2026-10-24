@@ -3231,7 +3231,9 @@ export class RoomStore {
     const char = room.characters.get(playerId)
     if (!char) return undefined
     const max = Math.max(0, char.standings.length - 1)
-    char.currentExpression = Math.min(Math.max(0, index), max)
+    if (!Number.isFinite(index)) return undefined
+    char.currentExpression = Math.min(Math.max(0, Math.trunc(index)), max)
+    if (char.charId) this.setPooledCharacter(room, char)
     room.lastActivityAt = Date.now()
     return char.currentExpression
   }

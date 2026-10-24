@@ -97,7 +97,7 @@ test('full VN view keeps its stage and active standing before dialogue', () => {
   const page = vnFixture()
   const view = page.render(false)
   assert.equal(view.props.className, 'center-vn')
-  assert.equal(view.props.children[2].props.children[1].props.src, 'active.png')
+  assert.equal(view.props.children[2].props.standings[0].src, 'active.png')
   assert.ok(!view.props.children.some((child) => child?.props?.className === 'vn-box'))
 })
 

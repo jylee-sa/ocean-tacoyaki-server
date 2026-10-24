@@ -14,11 +14,10 @@ export function isVnStandingHidden(message, hidden = {}, messages = []) {
 
 export function resolveVnStanding(message, { roster = {}, charPool = {}, characters = {}, self } = {}) {
   if (!message || message.npc) return null
-  if (message.standing !== undefined) {
-    return message.standing ? {
-      src: message.standing, height: message.standingHeight, name: message.author || ''
-    } : null
-  }
+  if (message.standing === null) return null
+  const snapshot = message.standing ? {
+    src: message.standing, height: message.standingHeight, name: message.author || ''
+  } : null
 
   const current = message.playerId ? roster[message.playerId] : undefined
   const matches = (character) => message.charId
@@ -33,9 +32,22 @@ export function resolveVnStanding(message, { roster = {}, charPool = {}, charact
       : Boolean(message.author && character.info.name === message.author))
     : undefined
   const portrait = identity ?? (local ? { ...local.portrait, name: local.info.name, visibility: local.visibility } : undefined)
-  if (!portrait || portrait.visibility === 'hidden') return null
+  if (!portrait) return snapshot
+  if (portrait.visibility === 'hidden') return null
   const images = portrait.standings ?? []
   const index = Math.max(0, Math.min(portrait.currentExpression ?? 0, images.length - 1))
   const src = images[index]
-  return src ? { src, height: portrait.standingHeight, name: message.author || portrait.name || '' } : null
+  return src ? { src, height: portrait.standingHeight, name: message.author || portrait.name || '' } : snapshot
+}
+
+export function updateVnExpression(state, playerId, index, charId) {
+  const current = state.roster[playerId]
+  if (!current || !Number.isFinite(index) || charId !== undefined && current.charId !== charId) return {}
+  const max = Math.max(0, (current.standings?.length ?? 0) - 1)
+  const next = { ...current, currentExpression: Math.max(0, Math.min(Math.trunc(index), max)) }
+  const key = current.charId ? `${playerId.length}:${playerId}${current.charId}` : undefined
+  return {
+    roster: { ...state.roster, [playerId]: next },
+    ...(key ? { charPool: { ...state.charPool, [key]: next } } : {})
+  }
 }
